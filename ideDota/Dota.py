@@ -23,77 +23,10 @@ from sklearn.preprocessing import StandardScaler, MinMaxScaler
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import roc_auc_score
 
+import catboost
+from catboost import CatBoostClassifier
+
 SEED = 42
-
-
-class MLP(nn.Module):
-    ''' Multi-layer perceptron with ReLu and Softmax.
-
-    Parameters:
-    -----------
-        n_input (int): number of nodes in the input layer
-        n_hidden (int list): list of number of nodes n_hidden[i] in the i-th hidden layer
-        n_output (int):  number of nodes in the output layer
-        drop_p (float): drop-out probability [0, 1]
-        random_state (int): seed for random number generator (use for reproducibility of result)
-    '''
-
-    def __init__(self, n_input, n_hidden, n_output, drop_p, random_state=SEED):
-        super().__init__()
-        self.random_state = random_state
-        set_random_seed(SEED)
-        self.hidden_layers = nn.ModuleList([nn.Linear(n_input, n_hidden[0])])
-        self.hidden_layers.extend([nn.Linear(h1, h2) for h1, h2 in zip(n_hidden[:-1], n_hidden[1:])])
-        self.output_layer = nn.Linear(n_hidden[-1], n_output)
-        self.dropout = nn.Dropout(p=drop_p)  # method to prevent overfitting
-
-    def forward(self, X):
-        ''' Forward propagation -- computes output from input X.
-        '''
-        for h in self.hidden_layers:
-            X = F.relu(h(X))
-            X = self.dropout(X)
-        X = self.output_layer(X)
-        return torch.sigmoid(X)
-
-    def predict_proba(self, X_test):
-        return self.forward(X_test).detach().squeeze(1).numpy()
-
-
-def set_random_seed(rand_seed=SEED):
-    ''' Helper function for setting random seed. Use for reproducibility of results'''
-    if type(rand_seed) == int:
-        torch.backends.cudnn.benchmark = False
-        torch.backends.cudnn.deterministic = True
-        random.seed(rand_seed)
-        np.random.seed(rand_seed)
-        torch.manual_seed(rand_seed)
-        torch.cuda.manual_seed(rand_seed)
-
-
-def write_to_submission_file(predicted_labels, df_test_features):
-    df_submission = pd.DataFrame({'radiant_win_prob': predicted_labels},
-                                 index=df_test_features.index)
-
-    submission_filename = 'submission_{}.csv'.format(
-        datetime.datetime.now(tz=pytz.timezone('Europe/Athens')).strftime('%Y-%m-%d_%H-%M-%S'))
-
-    df_submission.to_csv(submission_filename)
-
-    print('Submission saved to {}'.format(submission_filename))
-
-
-def outout_test_data(mlp, X_train, X_test_tensor):
-    # Save
-    torch.save(mlp.state_dict(), 'mlp.pth')
-
-    # Load
-    mlp = MLP(n_input=X_train.shape[1], n_hidden=[200, 100], n_output=1, drop_p=0.4)
-    mlp.load_state_dict(torch.load('mlp.pth'))
-    mlp.eval()
-    mlp_pred = mlp.predict_proba(X_test_tensor)
-
-    write_to_submission_file(mlp_pred)
 
 
 def readDataframe():
@@ -195,7 +128,77 @@ def prepareValidationData(X_train, X_test, y_train, test_size=0.2):
     return dataloaders, X_valid_tensor, y_valid, X_test_tensor
 
 
-def train(model, epochs, criterion, optimizer, scheduler, dataloaders, verbose=False):
+class MLP(nn.Module):
+    ''' Multi-layer perceptron with ReLu and Softmax.
+
+    Parameters:
+    -----------
+        n_input (int): number of nodes in the input layer
+        n_hidden (int list): list of number of nodes n_hidden[i] in the i-th hidden layer
+        n_output (int):  number of nodes in the output layer
+        drop_p (float): drop-out probability [0, 1]
+        random_state (int): seed for random number generator (use for reproducibility of result)
+    '''
+
+    def __init__(self, n_input, n_hidden, n_output, drop_p, random_state=SEED):
+        super().__init__()
+        self.random_state = random_state
+        set_random_seed(SEED)
+        self.hidden_layers = nn.ModuleList([nn.Linear(n_input, n_hidden[0])])
+        self.hidden_layers.extend([nn.Linear(h1, h2) for h1, h2 in zip(n_hidden[:-1], n_hidden[1:])])
+        self.output_layer = nn.Linear(n_hidden[-1], n_output)
+        self.dropout = nn.Dropout(p=drop_p)  # method to prevent overfitting
+
+    def forward(self, X):
+        ''' Forward propagation -- computes output from input X.
+        '''
+        for h in self.hidden_layers:
+            X = F.relu(h(X))
+            X = self.dropout(X)
+        X = self.output_layer(X)
+        return torch.sigmoid(X)
+
+    def predict_proba(self, X_test):
+        return self.forward(X_test).detach().squeeze(1).numpy()
+
+
+def set_random_seed(rand_seed=SEED):
+    ''' Helper function for setting random seed. Use for reproducibility of results'''
+    if type(rand_seed) == int:
+        torch.backends.cudnn.benchmark = False
+        torch.backends.cudnn.deterministic = True
+        random.seed(rand_seed)
+        np.random.seed(rand_seed)
+        torch.manual_seed(rand_seed)
+        torch.cuda.manual_seed(rand_seed)
+
+
+def write_to_submission_file(predicted_labels, df_test_features):
+    df_submission = pd.DataFrame({'radiant_win_prob': predicted_labels},
+                                 index=df_test_features.index)
+
+    submission_filename = 'submission_{}.csv'.format(
+        datetime.datetime.now(tz=pytz.timezone('Europe/Athens')).strftime('%Y-%m-%d_%H-%M-%S'))
+
+    df_submission.to_csv(submission_filename)
+
+    print('Submission saved to {}'.format(submission_filename))
+
+
+def output_test_data(mlp, X_train, X_test_tensor):
+    # Save
+    torch.save(mlp.state_dict(), 'mlp.pth')
+
+    # Load
+    mlp = MLP(n_input=X_train.shape[1], n_hidden=[200, 100], n_output=1, drop_p=0.4)
+    mlp.load_state_dict(torch.load('mlp.pth'))
+    mlp.eval()
+    mlp_pred = mlp.predict_proba(X_test_tensor)
+
+    write_to_submission_file(mlp_pred)
+
+
+def trainMPL(model, epochs, criterion, optimizer, scheduler, dataloaders, verbose=False):
     '''
     Train the given model...
 
@@ -289,7 +292,7 @@ def plot_losses(train_losses, val_losses):
     plt.show()
 
 
-def train_predict(dataloaders, X_train, X_valid_tensor, y_valid):
+def train_predict_MLP(dataloaders, X_train, X_valid_tensor, y_valid):
     mlp = MLP(n_input=X_train.shape[1], n_hidden=[200, 100], n_output=1, drop_p=0.4)
 
     criterion = nn.BCELoss()  # Binary cross entropy
@@ -298,20 +301,33 @@ def train_predict(dataloaders, X_train, X_valid_tensor, y_valid):
     scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=5, gamma=0.1)
 
     epochs = 12
-    train(mlp, epochs, criterion, optimizer, scheduler, dataloaders, verbose=True)
+    trainMPL(mlp, epochs, criterion, optimizer, scheduler, dataloaders, verbose=True)
     plot_losses(mlp.losses['train'], mlp.losses['valid'])
     score = roc_auc_score(y_valid.values, mlp.predict_proba(X_valid_tensor))
     return score, mlp
+
+
+def train_predict_Catboost(dataloaders, X_train, X_valid_tensor, y_valid):
+    model = CatBoostClassifier(iterations=200,
+                               task_type="GPU",
+                               verbose=1)
+
+    model.fit(dataloaders['train'])
+
+    y_predict = model.predict(X_valid_tensor)
+
+    score = roc_auc_score(y_valid.values, y_predict)
+    return score, model
 
 
 def main():
     df_train_features, df_train_targets, df_test_features = readDataframe();
     X_train, X_test, y_train = prepareData(df_train_features, df_train_targets, df_test_features)
     dataloaders, X_valid_tensor, y_valid, X_test_tensor = prepareValidationData(X_train, X_test, y_train)
-    score, mlp = train_predict(dataloaders, X_train, X_valid_tensor, y_valid)
+    score, model = train_predict_Catboost(dataloaders, X_train, X_valid_tensor, y_valid)
     print('ROC AUC score = {}'.format(score))
 
-    # outout_test_data(mlp, X_train, X_test_tensor)
+    # output_test_data(model, X_train, X_test_tensor)
 
 
 if __name__ == '__main__':
