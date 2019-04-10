@@ -2,3 +2,4 @@
 *.bat
 *.jsonl
 *.lock
+*/catboost_info/

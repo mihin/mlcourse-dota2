@@ -10,6 +10,7 @@ matplotlib = "*"
 sklearn = "*"
 torch = "*"
 pandas = "*"
+catboost = "*"
 
 [requires]
 python_version = "3.7"

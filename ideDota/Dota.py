@@ -97,6 +97,7 @@ def prepareData(df_train_features, df_train_targets, df_test_features):
     y_train = df_train_targets['radiant_win'].map({True: 1, False: 0})
 
     print(X_train.head())
+    print(X_train.describe())
 
     # splitting whole dataset on train and test
     # X_train = data.loc[:test_index].drop(["y"], axis=1)
@@ -107,9 +108,10 @@ def prepareData(df_train_features, df_train_targets, df_test_features):
     return X_train, X_test, y_train
 
 
-def prepareValidationData(X_train, X_test, y_train, test_size=0.2):
+def prepareValidationTensors(X_train, X_test, y_train, test_size=0.2):
     # Perform a train/validation split
-    X_train_part, X_valid, y_train_part, y_valid = train_test_split(X_train, y_train, test_size=test_size,
+    X_train_part, X_valid, y_train_part, y_valid = train_test_split(X_train, y_train,
+                                                                    test_size=test_size,
                                                                     random_state=SEED)
 
     # Convert to pytorch tensors
@@ -125,7 +127,7 @@ def prepareValidationData(X_train, X_test, y_train, test_size=0.2):
 
     dataloaders = {'train': data.DataLoader(train_dataset, batch_size=1000, shuffle=True, num_workers=2),
                    'valid': data.DataLoader(valid_dataset, batch_size=1000, shuffle=False, num_workers=2)}
-    return dataloaders, X_valid_tensor, y_valid, X_test_tensor
+    return dataloaders, X_train_tensor, X_valid_tensor, y_train_tensor, y_valid_tensor, X_test_tensor
 
 
 class MLP(nn.Module):
@@ -307,14 +309,14 @@ def train_predict_MLP(dataloaders, X_train, X_valid_tensor, y_valid):
     return score, mlp
 
 
-def train_predict_Catboost(dataloaders, X_train, X_valid_tensor, y_valid):
+def train_predict_Catboost(X_train, X_valid, y_train, y_valid):
     model = CatBoostClassifier(iterations=200,
-                               task_type="GPU",
+                               # task_type="GPU",
                                verbose=1)
 
-    model.fit(dataloaders['train'])
+    model.fit(X_train, y_train)
 
-    y_predict = model.predict(X_valid_tensor)
+    y_predict = model.predict(X_valid)
 
     score = roc_auc_score(y_valid.values, y_predict)
     return score, model
@@ -323,9 +325,13 @@ def train_predict_Catboost(dataloaders, X_train, X_valid_tensor, y_valid):
 def main():
     df_train_features, df_train_targets, df_test_features = readDataframe();
     X_train, X_test, y_train = prepareData(df_train_features, df_train_targets, df_test_features)
-    dataloaders, X_valid_tensor, y_valid, X_test_tensor = prepareValidationData(X_train, X_test, y_train)
-    score, model = train_predict_Catboost(dataloaders, X_train, X_valid_tensor, y_valid)
-    print('ROC AUC score = {}'.format(score))
+    # dataloaders, X_train_tensor, X_valid_tensor, y_train_tensor, y_valid_tensor, X_test_tensor
+    #   = prepareValidationTensors(X_train, X_test, y_train)
+
+    # Perform a train/validation split
+    # X_train_part, X_valid, y_train_part, y_valid = train_test_split(X_train, y_train, test_size=0.2, random_state=SEED)
+    # score, model = train_predict_Catboost(X_train_part, X_valid, y_train_part, y_valid)
+    # print('ROC AUC score = {}'.format(score))
 
     # output_test_data(model, X_train, X_test_tensor)
 
