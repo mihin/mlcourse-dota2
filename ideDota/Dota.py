@@ -66,7 +66,17 @@ class ColumnDataProcessor:
             axis=1).reset_index(drop=True)
         return df
 
+    def hot_feat_hero_id(self, df):
+        for t in ['r', 'd']:
+            for i in range(1, 6):
+                df = pd.concat([df, pd.get_dummies(df[f'{t}{i}_hero_id'], prefix=f'{t}{i}_hero_id')], axis=1)
+
+        return df
+
     def prepare_data(self, train, target, test, features_list):
+        r_heroes = [f'r{i}_hero_id' for i in range(1, 6)]
+        d_heroes = [f'd{i}_hero_id' for i in range(1, 6)]
+
         for c in features_list:
             r_columns = [f'r{i}_{c}' for i in range(1, 6)]
             d_columns = [f'd{i}_{c}' for i in range(1, 6)]
@@ -74,17 +84,19 @@ class ColumnDataProcessor:
             train = self.add_feature_average(train, c, r_columns, d_columns)
             test = self.add_feature_average(test, c, r_columns, d_columns)
 
-        r_heroes = [f'r{i}_hero_id' for i in range(1, 6)]
-        d_heroes = [f'd{i}_hero_id' for i in range(1, 6)]
-        feat_to_drop = ['game_time', 'game_mode', 'lobby_type', 'objectives_len', 'chat_len'] # + r_heroes + d_heroes
+            if self.to_scale:
+                features_to_scale = ['total_' + c + '_ratio', 'std_' + c + '_ratio',
+                                     'mean_' + c + '_ratio']  # + r_heroes + d_heroes
+                scaler = MinMaxScaler()
+                train[features_to_scale] = scaler.fit_transform(train[features_to_scale])
+                test[features_to_scale] = scaler.transform(test[features_to_scale])
+
+        train = self.hot_feat_hero_id(train)
+        test = self.hot_feat_hero_id(test)
+
+        feat_to_drop = ['game_time', 'game_mode', 'lobby_type', 'objectives_len', 'chat_len'] + r_heroes + d_heroes
         train = train.drop(feat_to_drop, axis=1).reset_index(drop=True)
         test = test.drop(feat_to_drop, axis=1).reset_index(drop=True)
-
-        if self.to_scale:
-            features_to_scale = ['total_' + c + '_ratio', 'std_' + c + '_ratio', 'mean_' + c + '_ratio'] + r_heroes + d_heroes
-            scaler = MinMaxScaler()
-            train[features_to_scale] = scaler.fit_transform(train[features_to_scale])
-            test[features_to_scale] = scaler.transform(test[features_to_scale])
 
         return self.prepare_data_simple(train, target, test)
 
@@ -93,13 +105,13 @@ class ColumnDataProcessor:
         y = targets['radiant_win']
         X_test = test.reset_index(drop=True)
 
-        for col in train.columns:
-            if train[col].isnull().any():
-                print(col, train[col].isnull().sum())
-
-        for col in test.columns:
-            if test[col].isnull().any():
-                print(col, test[col].isnull().sum())
+        # for col in train.columns:
+        #     if train[col].isnull().any():
+        #         print(col, train[col].isnull().sum())
+        #
+        # for col in test.columns:
+        #     if test[col].isnull().any():
+        #         print(col, test[col].isnull().sum())
 
         return X, y, X_test
 
