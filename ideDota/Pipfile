@@ -10,6 +10,11 @@ matplotlib = "*"
 sklearn = "*"
 torch = "*"
 pandas = "*"
+catboost = "*"
+seaborn = "*"
+lightgbm = "*"
+xgboost = "*"
+statsmodels = "*"
 
 [requires]
 python_version = "3.7"
