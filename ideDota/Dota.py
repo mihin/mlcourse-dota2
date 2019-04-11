@@ -10,6 +10,7 @@ import time
 import matplotlib.pyplot as plt
 import copy
 import collections
+import ujson as json
 
 # PyTorch stuff
 import torch
@@ -31,34 +32,38 @@ import statsmodels.api as sm
 from tqdm import tqdm_notebook
 from catboost import CatBoostClassifier
 
-import ujson as json
-
 SEED = 42
 
 
 class ColumnDataProcessor:
+    to_scale = True
 
-    def prepare_data_simple(self, train, targets, test):
-        X = train.reset_index(drop=True)
-        y = targets['radiant_win']
-        X_test = test.reset_index(drop=True)
-        return X, y, X_test
+    def replaceNaNValues(self, A):
+        A[np.isnan(A)] = 0
+        A[np.isinf(A)] = 0
+        return A
 
     def add_feature_average(self, df, c, r_columns, d_columns):
         df['r_total_' + c] = df[r_columns].sum(1)
         df['d_total_' + c] = df[d_columns].sum(1)
-        # df['total_' + c + '_ratio'] = df['d_total_' + c].apply(lambda x: 0 if x == 0 else df['r_total_' + c] / x)
+        df['total_' + c + '_ratio'] = df['r_total_' + c] / df['d_total_' + c]
+        df['total_' + c + '_ratio'] = self.replaceNaNValues(df['total_' + c + '_ratio'])
 
         df['r_std_' + c] = df[r_columns].std(1)
         df['d_std_' + c] = df[d_columns].std(1)
-        # df['std_' + c + '_ratio'] = df['r_std_' + c] / df['d_std_' + c] if (df['d_std_' + c] != 0) else 0
-        #
+        df['std_' + c + '_ratio'] = df['r_std_' + c] / df['d_std_' + c]
+        df['std_' + c + '_ratio'] = self.replaceNaNValues(df['std_' + c + '_ratio'])
+
         df['r_mean_' + c] = df[r_columns].mean(1)
         df['d_mean_' + c] = df[d_columns].mean(1)
-        # df['mean_' + c + '_ratio'] = df['r_mean_' + c] / df['d_mean_' + c] if (df['d_mean_' + c] != 0) else 0
+        df['mean_' + c + '_ratio'] = df['r_mean_' + c] / df['d_mean_' + c]
+        df['mean_' + c + '_ratio'] = self.replaceNaNValues(df['mean_' + c + '_ratio'])
 
         df = df.drop(r_columns, axis=1).reset_index(drop=True)
         df = df.drop(d_columns, axis=1).reset_index(drop=True)
+        df = df.drop(
+            ['r_total_' + c, 'd_total_' + c, 'r_std_' + c, 'd_std_' + c, 'r_mean_' + c, 'd_mean_' + c],
+            axis=1).reset_index(drop=True)
         return df
 
     def prepare_data(self, train, target, test, features_list):
@@ -69,7 +74,34 @@ class ColumnDataProcessor:
             train = self.add_feature_average(train, c, r_columns, d_columns)
             test = self.add_feature_average(test, c, r_columns, d_columns)
 
+        r_heroes = [f'r{i}_hero_id' for i in range(1, 6)]
+        d_heroes = [f'd{i}_hero_id' for i in range(1, 6)]
+        feat_to_drop = ['game_time', 'game_mode', 'lobby_type', 'objectives_len', 'chat_len'] # + r_heroes + d_heroes
+        train = train.drop(feat_to_drop, axis=1).reset_index(drop=True)
+        test = test.drop(feat_to_drop, axis=1).reset_index(drop=True)
+
+        if self.to_scale:
+            features_to_scale = ['total_' + c + '_ratio', 'std_' + c + '_ratio', 'mean_' + c + '_ratio'] + r_heroes + d_heroes
+            scaler = MinMaxScaler()
+            train[features_to_scale] = scaler.fit_transform(train[features_to_scale])
+            test[features_to_scale] = scaler.transform(test[features_to_scale])
+
         return self.prepare_data_simple(train, target, test)
+
+    def prepare_data_simple(self, train, targets, test):
+        X = train.reset_index(drop=True)
+        y = targets['radiant_win']
+        X_test = test.reset_index(drop=True)
+
+        for col in train.columns:
+            if train[col].isnull().any():
+                print(col, train[col].isnull().sum())
+
+        for col in test.columns:
+            if test[col].isnull().any():
+                print(col, test[col].isnull().sum())
+
+        return X, y, X_test
 
 
 class CSVDataPrepare:
@@ -178,18 +210,6 @@ class CSVDataPrepare:
     def prepare_data(self, train, target, test):
         engineering = ColumnDataProcessor()
         train, target, test = engineering.prepare_data(train, target, test, self.FEATURES_LIST)
-
-        r_heroes = [f'r{i}_hero_id' for i in range(1, 6)]
-        d_heroes = [f'd{i}_hero_id' for i in range(1, 6)]
-        feat_to_drop = ['game_time', 'game_mode', 'lobby_type', 'objectives_len', 'chat_len']
-
-        train = train.drop(r_heroes, axis=1).reset_index(drop=True)
-        train = train.drop(d_heroes, axis=1).reset_index(drop=True)
-        train = train.drop(feat_to_drop, axis=1).reset_index(drop=True)
-
-        test = test.drop(r_heroes, axis=1).reset_index(drop=True)
-        test = test.drop(d_heroes, axis=1).reset_index(drop=True)
-        test = test.drop(feat_to_drop, axis=1).reset_index(drop=True)
 
         return train, target, test
 
@@ -644,12 +664,10 @@ def lgb_model(X, X_test, y):
 
 
 def main():
-    # data_loader = CSVDataPrepare()
-    data_loader = JsonDataPrepare()
+    data_loader = CSVDataPrepare()
+    # data_loader = JsonDataPrepare()
     train, targets, test = data_loader.read_data_frame()
-    X_train, X_test, y_train = data_loader.prepare_data(train, targets, test)
-
-
+    X_train, y_train, X_test = data_loader.prepare_data(train, targets, test)
 
     print("\n\nPrepared data frame: ")
     print(X_train.columns)
