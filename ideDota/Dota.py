@@ -10,7 +10,6 @@ import time
 import matplotlib.pyplot as plt
 import copy
 import collections
-import ujson as json
 
 # PyTorch stuff
 import torch
@@ -21,16 +20,23 @@ from torch import optim
 
 # Sklearn stuff
 from sklearn.preprocessing import StandardScaler, MinMaxScaler
-from sklearn.model_selection import train_test_split, StratifiedKFold
+from sklearn.model_selection import train_test_split, StratifiedKFold, GridSearchCV
 from sklearn.metrics import roc_auc_score
+from sklearn.feature_extraction.text import TfidfVectorizer
 
 import seaborn as sns
 import lightgbm as lgb
 import xgboost as xgb
 import statsmodels.api as sm
 
+from IPython.display import display_html
 from tqdm import tqdm_notebook
 from catboost import CatBoostClassifier
+from itertools import combinations
+
+import ujson as json
+
+pd.options.mode.chained_assignment = None  # default='warn'
 
 SEED = 42
 
@@ -43,60 +49,134 @@ class ColumnDataProcessor:
         A[np.isinf(A)] = 0
         return A
 
-    def add_feature_average(self, df, c, r_columns, d_columns):
-        df['r_total_' + c] = df[r_columns].sum(1)
-        df['d_total_' + c] = df[d_columns].sum(1)
-        df['total_' + c + '_ratio'] = df['r_total_' + c] / df['d_total_' + c]
-        df['total_' + c + '_ratio'] = self.replaceNaNValues(df['total_' + c + '_ratio'])
+    def add_team_features(self, df, c, r_columns, d_columns):
+        drop_features = []
+        # df['r_total_' + c] = df[r_columns].sum(1)
+        # df['d_total_' + c] = df[d_columns].sum(1)
+        # df['total_' + c + '_ratio'] = df['r_total_' + c] / df['d_total_' + c]
+        # df['total_' + c + '_ratio'] = self.replaceNaNValues(df['total_' + c + '_ratio'])
+        # drop_features = drop_features + ['r_total_' + c, 'd_total_' + c]
 
         df['r_std_' + c] = df[r_columns].std(1)
         df['d_std_' + c] = df[d_columns].std(1)
         df['std_' + c + '_ratio'] = df['r_std_' + c] / df['d_std_' + c]
         df['std_' + c + '_ratio'] = self.replaceNaNValues(df['std_' + c + '_ratio'])
+        drop_features = drop_features + ['r_std_' + c, 'd_std_' + c]
 
         df['r_mean_' + c] = df[r_columns].mean(1)
         df['d_mean_' + c] = df[d_columns].mean(1)
         df['mean_' + c + '_ratio'] = df['r_mean_' + c] / df['d_mean_' + c]
         df['mean_' + c + '_ratio'] = self.replaceNaNValues(df['mean_' + c + '_ratio'])
+        # drop_features = drop_features + ['r_mean_' + c, 'd_mean_' + c]
 
-        df = df.drop(r_columns, axis=1).reset_index(drop=True)
-        df = df.drop(d_columns, axis=1).reset_index(drop=True)
-        df = df.drop(
-            ['r_total_' + c, 'd_total_' + c, 'r_std_' + c, 'd_std_' + c, 'r_mean_' + c, 'd_mean_' + c],
-            axis=1).reset_index(drop=True)
+        df = df.drop(r_columns, axis=1)
+        df = df.drop(d_columns, axis=1)
+        df = df.drop(drop_features, axis=1)
         return df
 
-    def hot_feat_hero_id(self, df):
-        for t in ['r', 'd']:
-            for i in range(1, 6):
-                df = pd.concat([df, pd.get_dummies(df[f'{t}{i}_hero_id'], prefix=f'{t}{i}_hero_id')], axis=1)
+    # As we see coordinate features (x and y) are quite important. However, I think we need to combine them into one
+    # feature.Simplest idea is the distance from the left bottom corner. So, short distances mean near own base,
+    # long distances - near the enemy base
+    def make_coordinate_features(self, df):
+        for team in 'r', 'd':
+            players = [f'{team}{i}' for i in range(1, 6)]  # r1, r2...
+            for player in players:
+                df[f'{player}_distance'] = np.sqrt(df[f'{player}_x'] ** 2 + df[f'{player}_y'] ** 2)
+                df.drop(columns=[f'{player}_x', f'{player}_y'], inplace=True)
+        return df
+
+    # def hot_feat_hero_id(self, df):
+    #     for team in ['r', 'd']:
+    #         for i in range(1, 6):
+    #             df = pd.concat([df, pd.get_dummies(df[f'{team}{i}_hero_id'], prefix=f'{team}{i}_hero_id')], axis=1)
+    #
+    #     return df
+
+    def hero_id_subset_analyzer(self, text):
+        # it takes a string of hero ids (like '1 2 5 4 3') as input
+        ids = set()
+        for i in range(1, 4):  # we need all subset of lenght 1-3. I think longer combinations are not relevant
+            hero_ids = text.split(' ')  # '1 2 5 4 3'-> ['1', '2', '5', '4', '3']
+            hero_ids.sort()  # sort them as '1 2 5 4 3' and '3 1 4 5 3' should produce the same set of tokens
+            combs = set(
+                combinations(hero_ids, i))  # all combinations of length i e.g for 2 are: (1,2), (1,3)... (2,5)... etc
+            ids = ids.union(combs)
+        ids = {"_".join(item) for item in ids}  # convert from lists to string e.g. (1,2) -> '1_2'
+        return ids
+
+    def replace_hero_ids(self, train, test):
+        vectorizer = TfidfVectorizer(self.hero_id_subset_analyzer, ngram_range=(1, 1), max_features=1000,
+                                     tokenizer=lambda s: s.split())
+        train = self.replace_hero_ids_df(train, vectorizer)
+        test = self.replace_hero_ids_df(test, vectorizer, train=False)
+        return train, test
+
+    def replace_hero_ids_df(self, df, vectorizer, train=True):
+
+        # ngram range is (1,1) as all combinations are created by analyser
+        # 1000 features - I think it's enough to cover all heroes + popular combos
+
+        for team in 'r', 'd':
+            players = [f'{team}{i}' for i in range(1, 6)]  # r1, r2,...
+            hero_columns = [f'{player}_hero_id' for player in players]  # r1_hero_id,....
+
+            # combine all hero id columns into one
+            df_hero_id_as_text = df[hero_columns].apply(lambda row: ' '.join([str(i) for i in row]), axis=1).tolist()
+
+            if train:
+                new_cols = pd.DataFrame(vectorizer.fit_transform(df_hero_id_as_text).todense(),
+                                        columns=vectorizer.get_feature_names())
+            else:
+                new_cols = pd.DataFrame(vectorizer.transform(df_hero_id_as_text).todense(),
+                                        columns=vectorizer.get_feature_names())
+
+            # add index to vectorized dataset - needed for merge?
+            new_cols['match_id_hash'] = df.index.values
+            new_cols = new_cols.set_index('match_id_hash').add_prefix(f'{team}_hero_')  # e.g.r_hero_10_21
+
+            # df = pd.merge(df, new_cols)
+            df = pd.merge(df, new_cols, on='match_id_hash')
+            df.drop(columns=hero_columns, inplace=True)
 
         return df
 
     def prepare_data(self, train, target, test, features_list):
+        print('prepare_data.. Start')
+
         r_heroes = [f'r{i}_hero_id' for i in range(1, 6)]
         d_heroes = [f'd{i}_hero_id' for i in range(1, 6)]
 
+        train = self.make_coordinate_features(train)
+        test = self.make_coordinate_features(test)
+        # As the distance is also a numeric feature convert it into the team features
+        features_list = features_list + ['distance']
+
+        print('prepare_data.. Adding team features')
         for c in features_list:
             r_columns = [f'r{i}_{c}' for i in range(1, 6)]
             d_columns = [f'd{i}_{c}' for i in range(1, 6)]
 
-            train = self.add_feature_average(train, c, r_columns, d_columns)
-            test = self.add_feature_average(test, c, r_columns, d_columns)
+            train = self.add_team_features(train, c, r_columns, d_columns)
+            test = self.add_team_features(test, c, r_columns, d_columns)
 
             if self.to_scale:
-                features_to_scale = ['total_' + c + '_ratio', 'std_' + c + '_ratio',
-                                     'mean_' + c + '_ratio']  # + r_heroes + d_heroes
+                features_to_scale = \
+                    ['std_' + c + '_ratio', 'mean_' + c + '_ratio', 'r_mean_' + c, 'd_mean_' + c]
+                #    ['total_' + c + '_ratio', 'std_' + c + '_ratio', 'mean_' + c + '_ratio']  # + r_heroes + d_heroes
                 scaler = MinMaxScaler()
                 train[features_to_scale] = scaler.fit_transform(train[features_to_scale])
                 test[features_to_scale] = scaler.transform(test[features_to_scale])
 
-        train = self.hot_feat_hero_id(train)
-        test = self.hot_feat_hero_id(test)
+        print('prepare_data.. Replace heroes id')
 
-        feat_to_drop = ['game_time', 'game_mode', 'lobby_type', 'objectives_len', 'chat_len'] + r_heroes + d_heroes
-        train = train.drop(feat_to_drop, axis=1).reset_index(drop=True)
-        test = test.drop(feat_to_drop, axis=1).reset_index(drop=True)
+        train, test = self.replace_hero_ids(train, test)
+        # train = self.hot_feat_hero_id(train)
+        # test = self.hot_feat_hero_id(test)
+
+        feat_to_drop = ['game_time', 'game_mode', 'lobby_type', 'objectives_len', 'chat_len']  # + r_heroes + d_heroes
+        print('prepare_data.. Drop extra columns: {}'.format(feat_to_drop))
+        train = train.drop(feat_to_drop, axis=1)
+        test = test.drop(feat_to_drop, axis=1)
 
         return self.prepare_data_simple(train, target, test)
 
@@ -113,6 +193,10 @@ class ColumnDataProcessor:
         #     if test[col].isnull().any():
         #         print(col, test[col].isnull().sum())
 
+        print("\n\nPrepared data frame: ")
+        print(X.describe())
+        print('Dimensions: train {}, test {}'.format(X.shape, X_test.shape))
+
         return X, y, X_test
 
 
@@ -127,10 +211,11 @@ class CSVDataPrepare:
         # Test dataset
         df_test_features = pd.read_csv(os.path.join(PATH_TO_DATA, 'test_features.csv'), index_col='match_id_hash')
         # Check if there is missing data
-        print("Original data frame: ")
+        print("Original data frame (CSV): ")
         # print('df_train_features.isnull() {}'.format(df_train_features.isnull().values.any()))
         # print('df_test_features.isnull() {}'.format(df_test_features.isnull().values.any()))
         print(df_train_features.shape)
+        # print(df_train_features.index.values)
         return df_train_features, df_train_targets, df_test_features
 
     def prepareDataOld(self, train, target, test):
@@ -215,7 +300,7 @@ class CSVDataPrepare:
     # win. What if we take mean and std of players' gold in a team? Maybe teams where players tend to have similar
     # parameters are more likely to win. Let's try creating these features.
     FEATURES_LIST = ['kills', 'deaths', 'assists', 'denies', 'gold', 'lh', 'xp', 'health', 'max_health', 'max_mana',
-                     'level', 'x', 'y', 'stuns', 'creeps_stacked', 'camps_stacked', 'rune_pickups',
+                     'level', 'stuns', 'creeps_stacked', 'camps_stacked', 'rune_pickups',
                      'firstblood_claimed', 'teamfight_participation', 'towers_killed', 'roshans_killed', 'obs_placed',
                      'sen_placed']
 
@@ -335,12 +420,13 @@ class JsonDataPrepare:
 
         test_new_features = pd.DataFrame.from_records(test_new_features).set_index('match_id_hash')
 
+        print("Original data frame (JSON): ")
         print(df_new_features.shape)
 
         return df_new_features, df_new_targets, test_new_features
 
     FEATURES_LIST = ['kills', 'deaths', 'assists', 'denies', 'gold', 'lh', 'xp', 'health', 'max_health', 'max_mana',
-                     'level', 'x', 'y', 'stuns', 'creeps_stacked', 'camps_stacked', 'rune_pickups',
+                     'level', 'stuns', 'creeps_stacked', 'camps_stacked', 'rune_pickups',
                      'firstblood_claimed', 'teamfight_participation', 'towers_killed', 'roshans_killed', 'obs_placed',
                      'sen_placed', 'ability_level', 'max_hero_hit', 'purchase_count', 'count_ability_use',
                      'damage_dealt', 'damage_received']
@@ -613,7 +699,11 @@ def train_model_generic(X, X_test, y, params, folds, model_type='lgb', plot_feat
             fold_importance["fold"] = fold_n + 1
             feature_importance = pd.concat([feature_importance, fold_importance], axis=0)
 
-    n_fold = len(folds)
+            # display_html(eli5.show_weights(estimator=model,
+            #                                feature_names=train_df.columns.values, top=50))
+
+    # TODO pass as a param
+    n_fold = 5
     print('!!!!!!!!! n_fold = {}'.format(n_fold))
     prediction /= n_fold
 
@@ -651,7 +741,72 @@ def catboost_model(X_train, y_train):
     # print('ROC AUC score = {}'.format(score))
 
 
-def lgb_model(X, X_test, y):
+def lgb_model_tunning(X, y, params):
+    print('lgb_model_tunning... Start')
+
+    # Create parameters to search
+    gridParams = {
+        'learning_rate': [0.005, 0.01],
+        'n_estimators': [40],
+        'num_leaves': [12, 16, 32, 64],
+        'boosting_type': ['gbdt'],
+        'objective': ['binary'],
+        'random_state': [SEED],  # Updated from 'seed'
+        'colsample_bytree': [0.65, 0.66],
+        'subsample': [0.7, 0.75],
+        'reg_alpha': [1, 1.2],
+        'reg_lambda': [1, 1.2, 1.4],
+    }
+
+    # Create classifier to use. Note that parameters have to be input manually
+    # not as a dict!
+    mdl = lgb.LGBMClassifier(boosting_type='gbdt',
+                             objective='binary',
+                             n_jobs=4,  # Updated from 'nthread'
+                             silent=True,
+                             max_depth=params['max_depth'],
+                             # max_bin=params['max_bin'],
+                             # subsample_for_bin=params['subsample_for_bin'],
+                             # subsample=params['subsample'],
+                             # subsample_freq=params['subsample_freq'],
+                             # min_split_gain=params['min_split_gain'],
+                             # min_child_weight=params['min_child_weight'],
+                             # min_child_samples=params['min_child_samples'],
+                             # scale_pos_weight=params['scale_pos_weight']
+                             )
+
+    # To view the default model params:
+    print(mdl.get_params().keys())
+
+    # Create the grid
+    grid = GridSearchCV(mdl, gridParams,
+                        verbose=0,
+                        cv=4,
+                        n_jobs=4)
+    # Run the grid
+    grid.fit(X, y)
+
+    # Print the best parameters found
+    print('===== Best params =====')
+    print(grid.best_params_)
+    print(grid.best_score_)
+
+    # Using parameters already set above, replace in the best from the grid search
+    params['colsample_bytree'] = grid.best_params_['colsample_bytree']
+    params['learning_rate'] = grid.best_params_['learning_rate']
+    # params['max_bin'] = grid.best_params_['max_bin']
+    params['num_leaves'] = grid.best_params_['num_leaves']
+    params['reg_alpha'] = grid.best_params_['reg_alpha']
+    params['reg_lambda'] = grid.best_params_['reg_lambda']
+    params['subsample'] = grid.best_params_['subsample']
+    # params['subsample_for_bin'] = grid.best_params_['subsample_for_bin']
+
+    print('Fitting with params: ')
+    print(params)
+    return params
+
+
+def lgb_model(X_train, X_test, y_train, tunning=False):
     n_fold = 5
     folds = StratifiedKFold(n_splits=n_fold, shuffle=True, random_state=42)
 
@@ -666,7 +821,30 @@ def lgb_model(X, X_test, y):
               'verbosity': 1,
               'objective': 'binary'
               }
-    oof_lgb, prediction_lgb, scores = train_model_generic(X, X_test, y,
+    # params = {'boosting_type': 'gbdt',
+    #           'max_depth': -1,
+    #           'objective': 'binary',
+    #           'nthread': 3,  # Updated from nthread
+    #           'num_leaves': 64,
+    #           'learning_rate': 0.05,
+    #           'max_bin': 512,
+    #           'subsample_for_bin': 200,
+    #           'subsample': 1,
+    #           'subsample_freq': 1,
+    #           'colsample_bytree': 0.8,
+    #           'reg_alpha': 5,
+    #           'reg_lambda': 10,
+    #           'min_split_gain': 0.5,
+    #           'min_child_weight': 1,
+    #           'min_child_samples': 5,
+    #           'scale_pos_weight': 1,
+    #           'num_class': 1,
+    #           'metric': 'auc'}
+
+    if tunning:
+        params = lgb_model_tunning(X_train, y_train, params)
+
+    oof_lgb, prediction_lgb, scores = train_model_generic(X_train, X_test, y_train,
                                                           params=params,
                                                           folds=folds,
                                                           model_type='lgb',
@@ -681,11 +859,8 @@ def main():
     train, targets, test = data_loader.read_data_frame()
     X_train, y_train, X_test = data_loader.prepare_data(train, targets, test)
 
-    print("\n\nPrepared data frame: ")
-    print(X_train.columns)
-    print(X_train.describe())
-
-    # lgb_model(X_train, X_test, y_train)
+    tunning = True
+    lgb_model(X_train, X_test, y_train, tunning)
 
     # output_test_data(model, X_train, X_test_tensor)
 
