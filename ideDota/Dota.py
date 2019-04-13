@@ -7,9 +7,10 @@ import datetime
 import pytz
 import random
 import time
-import matplotlib.pyplot as plt
 import copy
 import collections
+import matplotlib.pyplot as plt
+import pickle as pkl
 
 # PyTorch stuff
 import torch
@@ -212,19 +213,31 @@ class ColumnDataProcessor:
 class CSVDataPrepare:
 
     def read_data_frame(self):
-        PATH_TO_DATA = '../input/'
 
-        # Train dataset
-        df_train_features = pd.read_csv(os.path.join(PATH_TO_DATA, 'train_features.csv'), index_col='match_id_hash')
-        df_train_targets = pd.read_csv(os.path.join(PATH_TO_DATA, 'train_targets.csv'), index_col='match_id_hash')
-        # Test dataset
-        df_test_features = pd.read_csv(os.path.join(PATH_TO_DATA, 'test_features.csv'), index_col='match_id_hash')
-        # Check if there is missing data
-        print("Original data frame (CSV): ")
-        # print('df_train_features.isnull() {}'.format(df_train_features.isnull().values.any()))
-        # print('df_test_features.isnull() {}'.format(df_test_features.isnull().values.any()))
-        print(df_train_features.shape)
-        # print(df_train_features.index.values)
+        if os.path.exists('df_train_csv.pkl'):
+            df_train_features = pd.read_pickle('df_train_csv.pkl')
+            df_train_targets = pd.read_pickle('df_targets_csv.pkl')
+            df_test_features = pd.read_pickle('df_test_csv.pkl')
+            print('Dataframes were read from pkl')
+        else:
+            PATH_TO_DATA = '../input/'
+
+            # Train dataset
+            df_train_features = pd.read_csv(os.path.join(PATH_TO_DATA, 'train_features.csv'), index_col='match_id_hash')
+            df_train_targets = pd.read_csv(os.path.join(PATH_TO_DATA, 'train_targets.csv'), index_col='match_id_hash')
+            # Test dataset
+            df_test_features = pd.read_csv(os.path.join(PATH_TO_DATA, 'test_features.csv'), index_col='match_id_hash')
+            # Check if there is missing data
+            print("Original data frame (CSV): ")
+            # print('df_train_features.isnull() {}'.format(df_train_features.isnull().values.any()))
+            # print('df_test_features.isnull() {}'.format(df_test_features.isnull().values.any()))
+            print(df_train_features.shape)
+            # print(df_train_features.index.values)
+
+            df_train_features.to_pickle('df_train_csv.pkl')
+            df_train_targets.to_pickle('df_targets_csv.pkl')
+            df_test_features.to_pickle('df_test_csv.pkl')
+
         return df_train_features, df_train_targets, df_test_features
 
     def prepareDataOld(self, train, target, test):
@@ -922,11 +935,11 @@ def lgb_model(X_train, X_test, y_train, tunning=False):
 def main():
     data_loader = CSVDataPrepare()
     # data_loader = JsonDataPrepare()
-    train, targets, test = data_loader.read_data_frame()
-    X_train, y_train, X_test = data_loader.prepare_data(train, targets, test)
+    # train, targets, test = data_loader.read_data_frame()
+    # X_train, y_train, X_test = data_loader.prepare_data(train, targets, test)
 
-    tunning = True
-    lgb_model(X_train, X_test, y_train, tunning)
+    # tunning = True
+    # lgb_model(X_train, X_test, y_train, tunning)
 
     # output_test_data(model, X_train, X_test_tensor)
 
