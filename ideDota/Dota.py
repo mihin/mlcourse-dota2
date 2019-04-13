@@ -107,8 +107,17 @@ class ColumnDataProcessor:
     def replace_hero_ids(self, train, test):
         vectorizer = TfidfVectorizer(self.hero_id_subset_analyzer, ngram_range=(1, 1), max_features=1000,
                                      tokenizer=lambda s: s.split())
-        train = self.replace_hero_ids_df(train, vectorizer)
-        test = self.replace_hero_ids_df(test, vectorizer, train=False)
+
+        full_df = pd.concat([train, test], sort=False)
+        train_size = train.shape[0]
+        full_df = self.replace_hero_ids_df(full_df, vectorizer)
+
+        # train = self.replace_hero_ids_df(train, vectorizer)
+        # test = self.replace_hero_ids_df(test, vectorizer, train=False)
+
+        train = full_df.iloc[:train_size, :]
+        test = full_df.iloc[train_size:, :]
+
         return train, test
 
     def replace_hero_ids_df(self, df, vectorizer, train=True):
@@ -351,6 +360,12 @@ class JsonDataPrepare:
         'sen_placed',
     ]
 
+    FEATURES_LIST = ['kills', 'deaths', 'assists', 'denies', 'gold', 'lh', 'xp', 'health', 'max_health', 'max_mana',
+                     'level', 'stuns', 'creeps_stacked', 'camps_stacked', 'rune_pickups',
+                     'firstblood_claimed', 'teamfight_participation', 'towers_killed', 'roshans_killed', 'obs_placed',
+                     'sen_placed', 'ability_level', 'max_hero_hit', 'purchase_count', 'count_ability_use',
+                     'damage_dealt', 'damage_received']
+
     def extract_features_csv(self, match):
         row = [
             ('match_id_hash', match['match_id_hash']),
@@ -374,6 +389,8 @@ class JsonDataPrepare:
             row.append((f'{player_name}_count_ability_use', sum(player['ability_uses'].values())))
             row.append((f'{player_name}_damage_dealt', sum(player['damage'].values())))
             row.append((f'{player_name}_damage_received', sum(player['damage_taken'].values())))
+            # adding hero inventory
+            row.append((f'{player_name}_items', list(map(lambda x: x['id'][5:], player['hero_inventory']))))
 
         return collections.OrderedDict(row)
 
@@ -425,13 +442,47 @@ class JsonDataPrepare:
 
         return df_new_features, df_new_targets, test_new_features
 
-    FEATURES_LIST = ['kills', 'deaths', 'assists', 'denies', 'gold', 'lh', 'xp', 'health', 'max_health', 'max_mana',
-                     'level', 'stuns', 'creeps_stacked', 'camps_stacked', 'rune_pickups',
-                     'firstblood_claimed', 'teamfight_participation', 'towers_killed', 'roshans_killed', 'obs_placed',
-                     'sen_placed', 'ability_level', 'max_hero_hit', 'purchase_count', 'count_ability_use',
-                     'damage_dealt', 'damage_received']
+    # engineering inventory
+    def add_inventory_dummies(self, train_df, test_df):
+
+        full_df = pd.concat([train_df, test_df], sort=False)
+        train_size = train_df.shape[0]
+
+        # In DOTA there are consumble items, which just restore a small amount of hp/mana or teleports you.
+        # These items do not affect the outcome of the game, so let's remove it!
+        consumable_columns = ['tango', 'tpscroll',
+                              'bottle', 'flask',
+                              'enchanted_mango', 'clarity',
+                              'faerie_fire', 'ward_observer',
+                              'ward_sentry']
+
+        for team in 'r', 'd':
+            players = [f'{team}{i}' for i in range(1, 6)]
+            item_columns = [f'{player}_items' for player in players]
+
+            d = pd.get_dummies(full_df[item_columns[0]].apply(pd.Series).stack()).sum(level=0, axis=0)
+            dindexes = d.index.values
+
+            for c in item_columns[1:]:
+                d = d.add(pd.get_dummies(full_df[c].apply(pd.Series).stack()).sum(level=0, axis=0), fill_value=0)
+                d = d.ix[dindexes]
+
+            full_df = pd.concat([full_df, d.add_prefix(f'{team}_item_')], axis=1, sort=False)
+            full_df.drop(columns=item_columns, inplace=True)
+
+            starts_with = f'{team}_item_'
+            consumable_columns_drop = [starts_with + column for column in consumable_columns]
+            full_df.drop(columns=consumable_columns_drop, inplace=True)
+
+        train_df = full_df.iloc[:train_size, :]
+        test_df = full_df.iloc[train_size:, :]
+
+        return train_df, test_df
 
     def prepare_data(self, train, target, test):
+
+        train, test = self.add_inventory_dummies(train, test)
+
         engineering = ColumnDataProcessor()
         train, target, test = engineering.prepare_data(train, target, test, self.FEATURES_LIST)
 
@@ -704,7 +755,6 @@ def train_model_generic(X, X_test, y, params, folds, model_type='lgb', plot_feat
 
     # TODO pass as a param
     n_fold = 5
-    print('!!!!!!!!! n_fold = {}'.format(n_fold))
     prediction /= n_fold
 
     print('CV mean score: {0:.4f}, std: {1:.4f}.'.format(np.mean(scores), np.std(scores)))
@@ -746,43 +796,48 @@ def lgb_model_tunning(X, y, params):
 
     # Create parameters to search
     gridParams = {
-        'learning_rate': [0.005, 0.01],
+        'learning_rate': [0.02],
         'n_estimators': [40],
-        'num_leaves': [12, 16, 32, 64],
+        'colsample_bytree': [0.66],
+        'subsample': [0.7],
+        'reg_lambda': [1],
+        'reg_alpha': [0.1],
+        'num_leaves': [127],
+        'min_data_in_leaf': [50],
+        #         'lambda_l1': [0],
+        #         'lambda_l2': [1],
+        'random_state': [SEED],
         'boosting_type': ['gbdt'],
         'objective': ['binary'],
-        'random_state': [SEED],  # Updated from 'seed'
-        'colsample_bytree': [0.65, 0.66],
-        'subsample': [0.7, 0.75],
-        'reg_alpha': [1, 1.2],
-        'reg_lambda': [1, 1.2, 1.4],
     }
-
     # Create classifier to use. Note that parameters have to be input manually
     # not as a dict!
-    mdl = lgb.LGBMClassifier(boosting_type='gbdt',
-                             objective='binary',
-                             n_jobs=4,  # Updated from 'nthread'
-                             silent=True,
-                             max_depth=params['max_depth'],
-                             # max_bin=params['max_bin'],
-                             # subsample_for_bin=params['subsample_for_bin'],
-                             # subsample=params['subsample'],
-                             # subsample_freq=params['subsample_freq'],
-                             # min_split_gain=params['min_split_gain'],
-                             # min_child_weight=params['min_child_weight'],
-                             # min_child_samples=params['min_child_samples'],
-                             # scale_pos_weight=params['scale_pos_weight']
-                             )
+    mdl = lgb.LGBMClassifier(
+        metric=params['metric'],
+        #         metric_freq=params['metric_freq'],
+        is_training_metric=params['is_training_metric'],
+        max_bin=params['max_bin'],
+        #         tree_learner=params['tree_learner'],
+        #         bagging_freq=params['bagging_freq'],
+        #         min_data_in_leaf=params['min_data_in_leaf'],
+        #         min_sum_hessian_in_leaf=params['min_sum_hessian_in_leaf'],
+        is_enable_sparse=params['is_enable_sparse'],
+        use_two_round_loading=params['use_two_round_loading'],
+        is_save_binary_file=params['is_save_binary_file'],
+        n_jobs=-1
+    )
 
     # To view the default model params:
     print(mdl.get_params().keys())
 
     # Create the grid
-    grid = GridSearchCV(mdl, gridParams,
+    grid = GridSearchCV(mdl,
+                        gridParams,
                         verbose=0,
                         cv=4,
-                        n_jobs=4)
+                        refit='AUC',
+                        scoring={'AUC': 'roc_auc'},
+                        n_jobs=-1)
     # Run the grid
     grid.fit(X, y)
 
@@ -792,13 +847,17 @@ def lgb_model_tunning(X, y, params):
     print(grid.best_score_)
 
     # Using parameters already set above, replace in the best from the grid search
-    params['colsample_bytree'] = grid.best_params_['colsample_bytree']
     params['learning_rate'] = grid.best_params_['learning_rate']
-    # params['max_bin'] = grid.best_params_['max_bin']
-    params['num_leaves'] = grid.best_params_['num_leaves']
-    params['reg_alpha'] = grid.best_params_['reg_alpha']
-    params['reg_lambda'] = grid.best_params_['reg_lambda']
+    params['n_estimators'] = grid.best_params_['n_estimators']
+    params['colsample_bytree'] = grid.best_params_['colsample_bytree']
     params['subsample'] = grid.best_params_['subsample']
+    params['reg_lambda'] = grid.best_params_['reg_lambda']
+    params['reg_alpha'] = grid.best_params_['reg_alpha']
+    params['num_leaves'] = grid.best_params_['num_leaves']
+    params['min_data_in_leaf'] = grid.best_params_['min_data_in_leaf']
+    #     params['lambda_l1'] = grid.best_params_['lambda_l1']
+    #     params['lambda_l2'] = grid.best_params_['lambda_l2']
+    # params['max_bin'] = grid.best_params_['max_bin']
     # params['subsample_for_bin'] = grid.best_params_['subsample_for_bin']
 
     print('Fitting with params: ')
@@ -808,22 +867,30 @@ def lgb_model_tunning(X, y, params):
 
 def lgb_model(X_train, X_test, y_train, tunning=False):
     n_fold = 5
-    folds = StratifiedKFold(n_splits=n_fold, shuffle=True, random_state=42)
+    folds = StratifiedKFold(n_splits=n_fold, shuffle=True, random_state=SEED)
 
     params = {'boost': 'gbdt',
-              'feature_fraction': 0.05,
-              'learning_rate': 0.01,
+              'feature_fraction': 0.05,  # handling overfitting
               'max_depth': -1,
               'metric': 'auc',
               'min_data_in_leaf': 50,
-              'num_leaves': 32,
+              'num_leaves': 32,  # 10
               'num_threads': -1,
               'verbosity': 1,
-              'objective': 'binary'
+              'objective': 'binary',
+              'learning_rate': 0.01, # the changes between one auc and a better one gets really small thus a small
+              # learning rate performs better
+
+              'reg_alpha': 1.2,
+              'reg_lambda': 1,
+              'colsample_bytree': 0.66,
+              'bagging_freq': 5,  # handling overfitting
+              'bagging_fraction': 0.5,  # handling overfitting - adding some noise
+              'boost_from_average': 'false',
+              'min_sum_hessian_in_leaf': 10.0,
+              'tree_learner': 'serial',
               }
-    # params = {'boosting_type': 'gbdt',
-    #           'max_depth': -1,
-    #           'objective': 'binary',
+
     #           'nthread': 3,  # Updated from nthread
     #           'num_leaves': 64,
     #           'learning_rate': 0.05,
@@ -839,7 +906,6 @@ def lgb_model(X_train, X_test, y_train, tunning=False):
     #           'min_child_samples': 5,
     #           'scale_pos_weight': 1,
     #           'num_class': 1,
-    #           'metric': 'auc'}
 
     if tunning:
         params = lgb_model_tunning(X_train, y_train, params)

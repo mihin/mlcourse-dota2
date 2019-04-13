@@ -1,7 +1,7 @@
 # See also: https://www.kaggle.com/garethjns/microsoft-lightgbm-0-795
 # https://github.com/garethjns/Kaggle-Titanic
 
-#%% Imports
+# %% Imports
 # The usuals
 import pandas as pd
 import numpy as np
@@ -18,8 +18,7 @@ from sklearn.model_selection import train_test_split
 from sklearn.metrics import (roc_curve, auc, accuracy_score)
 from sklearn.model_selection import GridSearchCV
 
-
-#%% Import data
+# %% Import data
 # Import both data sets
 # trainRaw = pd.read_csv('input/train.csv')
 # testRaw = pd.read_csv('input/test.csv')
@@ -79,6 +78,7 @@ def DR(s):
 
     return [letter, number, nRooms]
 
+
 # Apply DR function to each cell in Cabin column using pandas apply method.
 out = full['Cabin'].apply(DR)
 # Outout tuple with 3 values for each row, convert this to pandas df
@@ -90,7 +90,6 @@ out.columns = ['CL', 'CN', 'nC']
 full = pd.concat([full, out],
                  axis=1)
 
-
 # %% Family
 # Add some family features directly to new columns in the dataset
 
@@ -100,7 +99,6 @@ full['fSize'] = full['SibSp'] + full['Parch'] + 1
 full['fRatio'] = (full['Parch'] + 1) / (full['SibSp'] + 1)
 # Adult?
 full['Adult'] = full['Age'] > 18
-
 
 # %% Names
 
@@ -164,7 +162,6 @@ out.columns = ['Surname', 'Title']
 full = pd.concat([full, out],
                  axis=1)
 
-
 # %% Categorical columns
 # List of categorical columns to recode
 catCols = ['Sex', 'Embarked', 'CL', 'CN', 'Surname', 'Title']
@@ -178,51 +175,47 @@ for c in catCols:
     # Convert the cat codes to categotical...
     full[c] = pd.Categorical(full[c])
 
-
 # Generate a logical index of categorical columns to maybe use with LightGBM later
-catCols = [i for i,v in enumerate(full.dtypes) if str(v)=='category']
+catCols = [i for i, v in enumerate(full.dtypes) if str(v) == 'category']
 
-
-#%% Age
+# %% Age
 # Replace missing age values with median.
 # See ither kernels for more sophisticated ways of doing this!
 full.loc[full.Age.isnull(), 'Age'] = np.median(full['Age'].loc[full.Age.notnull()])
 
+# %% Split datasets
+train = full.iloc[0:nTrain, :]
+test = full.iloc[nTrain::, :]
 
-#%% Split datasets
-train = full.iloc[0:nTrain,:]
-test = full.iloc[nTrain::,:]
 
-
-#%% Prepare data
+# %% Prepare data
 def prepLGB(data,
             classCol='',
             IDCol='',
             fDrop=[]):
+    # Drop class column
+    if classCol != '':
+        labels = data[classCol]
+        fDrop = fDrop + [classCol]
+    else:
+        labels = []
 
-        # Drop class column
-        if classCol != '':
-            labels = data[classCol]
-            fDrop = fDrop + [classCol]
-        else:
-            labels = []
+    if IDCol != '':
+        IDs = data[IDCol]
+    else:
+        IDs = []
 
-        if IDCol != '':
-            IDs = data[IDCol]
-        else:
-            IDs = []
+    if fDrop != []:
+        data = data.drop(fDrop,
+                         axis=1)
 
-        if fDrop != []:
-           data = data.drop(fDrop,
-                            axis=1)
+    # Create LGB mats
+    lData = lgb.Dataset(data, label=labels,
+                        free_raw_data=False,
+                        feature_name=list(data.columns),
+                        categorical_feature='auto')
 
-        # Create LGB mats
-        lData = lgb.Dataset(data, label=labels,
-                            free_raw_data=False,
-                            feature_name=list(data.columns),
-                            categorical_feature='auto')
-
-        return lData, labels, IDs, data
+    return lData, labels, IDs, data
 
 
 # Specify columns to drop
@@ -236,32 +229,32 @@ trainData, validData = train_test_split(train,
 
 # Prepare the data sets
 trainDataL, trainLabels, trainIDs, trainData = prepLGB(trainData,
-                                                 classCol='Survived',
-                                                 IDCol='PassengerId',
-                                                 fDrop=fDrop)
+                                                       classCol='Survived',
+                                                       IDCol='PassengerId',
+                                                       fDrop=fDrop)
 
 validDataL, validLabels, validIDs, validData = prepLGB(validData,
-                                                 classCol='Survived',
-                                                 IDCol='PassengerId',
-                                                 fDrop=fDrop)
+                                                       classCol='Survived',
+                                                       IDCol='PassengerId',
+                                                       fDrop=fDrop)
 
-testDataL, _, _ , testData = prepLGB(test,
-                                 classCol='Survived',
-                                 IDCol='PassengerId',
-                                 fDrop=fDrop)
+testDataL, _, _, testData = prepLGB(test,
+                                    classCol='Survived',
+                                    IDCol='PassengerId',
+                                    fDrop=fDrop)
 
 # Prepare data set using all the training data
-allTrainDataL, allTrainLabels, _ , allTrainData = prepLGB(train,
-                                                 classCol='Survived',
-                                                 IDCol='PassengerId',
-                                                 fDrop=fDrop)
+allTrainDataL, allTrainLabels, _, allTrainData = prepLGB(train,
+                                                         classCol='Survived',
+                                                         IDCol='PassengerId',
+                                                         fDrop=fDrop)
 
 # Set params
 # Scores ~0.784 (without tuning and early stopping)
 params = {'boosting_type': 'gbdt',
-          'max_depth' : -1,
+          'max_depth': -1,
           'objective': 'binary',
-          'nthread': 3, # Updated from nthread
+          'nthread': 3,  # Updated from nthread
           'num_leaves': 64,
           'learning_rate': 0.05,
           'max_bin': 512,
@@ -275,38 +268,38 @@ params = {'boosting_type': 'gbdt',
           'min_child_weight': 1,
           'min_child_samples': 5,
           'scale_pos_weight': 1,
-          'num_class' : 1,
-          'metric' : 'binary_error'}
+          'num_class': 1,
+          'metric': 'binary_error'}
 
 # Create parameters to search
 gridParams = {
     'learning_rate': [0.005],
     'n_estimators': [40],
-    'num_leaves': [6,8,12,16],
-    'boosting_type' : ['gbdt'],
-    'objective' : ['binary'],
-    'random_state' : [501], # Updated from 'seed'
-    'colsample_bytree' : [0.65, 0.66],
-    'subsample' : [0.7,0.75],
-    'reg_alpha' : [1,1.2],
-    'reg_lambda' : [1,1.2,1.4],
-    }
+    'num_leaves': [6, 8, 12, 16],
+    'boosting_type': ['gbdt'],
+    'objective': ['binary'],
+    'random_state': [501],  # Updated from 'seed'
+    'colsample_bytree': [0.65, 0.66],
+    'subsample': [0.7, 0.75],
+    'reg_alpha': [1, 1.2],
+    'reg_lambda': [1, 1.2, 1.4],
+}
 
 # Create classifier to use. Note that parameters have to be input manually
 # not as a dict!
-mdl = lgb.LGBMClassifier(boosting_type= 'gbdt',
-          objective = 'binary',
-          n_jobs = 3, # Updated from 'nthread'
-          silent = True,
-          max_depth = params['max_depth'],
-          max_bin = params['max_bin'],
-          subsample_for_bin = params['subsample_for_bin'],
-          subsample = params['subsample'],
-          subsample_freq = params['subsample_freq'],
-          min_split_gain = params['min_split_gain'],
-          min_child_weight = params['min_child_weight'],
-          min_child_samples = params['min_child_samples'],
-          scale_pos_weight = params['scale_pos_weight'])
+mdl = lgb.LGBMClassifier(boosting_type='gbdt',
+                         objective='binary',
+                         n_jobs=3,  # Updated from 'nthread'
+                         silent=True,
+                         max_depth=params['max_depth'],
+                         max_bin=params['max_bin'],
+                         subsample_for_bin=params['subsample_for_bin'],
+                         subsample=params['subsample'],
+                         subsample_freq=params['subsample_freq'],
+                         min_split_gain=params['min_split_gain'],
+                         min_child_weight=params['min_child_weight'],
+                         min_child_samples=params['min_child_samples'],
+                         scale_pos_weight=params['scale_pos_weight'])
 
 # To view the default model params:
 mdl.get_params().keys()
@@ -349,13 +342,13 @@ for i in range(0, k):
                                             test_size=0.4,
                                             stratify=train.Survived)
     trainDataL, trainLabels, trainIDs, trainData = prepLGB(trainData,
-                                                     classCol='Survived',
-                                                     IDCol='PassengerId',
-                                                     fDrop=fDrop)
+                                                           classCol='Survived',
+                                                           IDCol='PassengerId',
+                                                           fDrop=fDrop)
     validDataL, validLabels, validIDs, validData = prepLGB(validData,
-                                                     classCol='Survived',
-                                                     IDCol='PassengerId',
-                                                     fDrop=fDrop)
+                                                           classCol='Survived',
+                                                           IDCol='PassengerId',
+                                                           fDrop=fDrop)
     # Train
     gbm = lgb.train(params,
                     trainDataL,
@@ -370,11 +363,11 @@ for i in range(0, k):
 
     # Predict
     predsValid += gbm.predict(validData,
-                              num_iteration=gbm.best_iteration)/k
+                              num_iteration=gbm.best_iteration) / k
     predsTrain += gbm.predict(trainData,
-                              num_iteration=gbm.best_iteration)/k
+                              num_iteration=gbm.best_iteration) / k
     predsTest += gbm.predict(testData,
-                             num_iteration=gbm.best_iteration)/k
+                             num_iteration=gbm.best_iteration) / k
 
 # Print assessment
 # assessMod(predsTrain, trainLabels, predsValid=predsValid, yValid= validLabels,
@@ -386,3 +379,70 @@ sub['PassengerId'] = test['PassengerId']
 sub['Survived'] = np.int32(predsTest > 0.5)
 sub.to_csv('sub2.csv',
            index=False)
+
+# CV
+# mean
+# score: 0.8416, std: 0.0058.
+# {'boost': 'gbdt', 'feature_fraction': 0.05, 'learning_rate': 0.01, 'max_depth': -1, 'metric': 'auc',
+#  'min_data_in_leaf': 50, 'num_leaves': 32, 'num_threads': -1, 'verbosity': 1, 'objective': 'binary',
+#  'colsample_bytree': 0.66, 'reg_alpha': 1, 'reg_lambda': 1, 'subsample': 0.7}
+#
+#
+# CV
+# mean
+# score: 0.8413, std: 0.0055.
+# {'boost': 'gbdt', 'feature_fraction': 0.05, 'max_depth': -1, 'metric': 'auc', 'min_data_in_leaf': 50,
+# 'num_leaves': 32, 'num_threads': -1, 'verbosity': 1, 'objective': 'binary', 'learning_rate': 0.01}
+#
+#
+# CV
+# mean
+# score: 0.8399, std: 0.0057.
+# {'boost': 'gbdt', 'feature_fraction': 0.05, 'learning_rate': 0.015, 'max_depth': -1, 'metric': 'auc',
+#  'min_data_in_leaf': 50, 'num_leaves': 64, 'num_threads': -1, 'verbosity': 1, 'objective': 'binary',
+#  'colsample_bytree': 0.65, 'reg_alpha': 1.2, 'reg_lambda': 1, 'subsample': 0.7}
+#
+# CV
+# mean
+# score: 0.8398, std: 0.0052.
+# {'boost': 'gbdt', 'feature_fraction': 0.05, 'learning_rate': 0.02, 'max_depth': -1, 'metric': 'auc',
+#  'min_data_in_leaf': 50, 'num_leaves': 64, 'num_threads': -1, 'verbosity': 1, 'objective': 'binary',
+#  'colsample_bytree': 0.66, 'reg_alpha': 1.2, 'reg_lambda': 1, 'subsample': 0.7}
+#
+# CV
+# mean
+# score: 0.8252, std: 0.0055.
+# {'boosting_type': 'gbdt', 'colsample_bytree': 0.66, 'lambda_l1': 0, 'lambda_l2': 1, 'learning_rate': 0.015,
+#  'min_data_in_leaf': 50, 'n_estimators': 40, 'num_leaves': 127, 'objective': 'binary', 'random_state': 42,
+#  'reg_alpha': 0.1, 'reg_lambda': 1.2, 'subsample': 0.7}
+
+# CV mean score: 0.8263, std: 0.0054.
+# {'boosting_type': 'gbdt', 'colsample_bytree': 0.66, 'lambda_l1': 0, 'lambda_l2': 1, 'learning_rate': 0.015,
+#  'min_data_in_leaf': 50, 'n_estimators': 40, 'num_leaves': 127, 'objective': 'binary', 'random_state': 42,
+#  'reg_alpha': 0.1, 'reg_lambda': 1, 'subsample': 0.7}
+#
+# CV
+# mean
+# score: 0.8264, std: 0.0055.
+# {'boosting_type': 'gbdt', 'colsample_bytree': 0.66, 'lambda_l1': 0, 'lambda_l2': 1, 'learning_rate': 0.02,
+#  'min_data_in_leaf': 50, 'n_estimators': 40, 'num_leaves': 127, 'objective': 'binary', 'random_state': 42,
+#  'reg_alpha': 0.1, 'reg_lambda': 1, 'subsample': 0.7}
+#
+# {'nthread': 3, 'num_leaves': 6, 'learning_rate': 0.005, 'max_bin': 512, 'subsample_for_bin': 200, 'subsample': 0.7,
+#  'subsample_freq': 1, 'colsample_bytree': 0.65, 'reg_alpha': 1, 'reg_lambda': 1, 'min_split_gain': 0.5,
+#  'min_child_weight': 1, 'min_child_samples': 5, 'scale_pos_weight': 1, 'num_class': 1, 'metric': 'binary_error'}
+
+# params = {'boost': 'gbdt',
+#         'feature_fraction': 0.05,
+#         'max_depth': -1,
+#         'metric':'auc',
+#         'min_data_in_leaf': 50,
+#         'num_leaves': 32,
+#         'num_threads': -1,
+#         'verbosity': 1,
+#         'objective': 'binary',
+
+#         'learning_rate': 0.01,
+#        }
+
+# specify your configurations as a dict
