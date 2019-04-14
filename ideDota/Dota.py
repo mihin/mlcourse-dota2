@@ -214,12 +214,15 @@ class CSVDataPrepare:
 
     def read_data_frame(self):
 
-        if os.path.exists('df_train_csv.pkl'):
-            df_train_features = pd.read_pickle('df_train_csv.pkl')
-            df_train_targets = pd.read_pickle('df_targets_csv.pkl')
-            df_test_features = pd.read_pickle('df_test_csv.pkl')
+        PICKLE_PATH = './pickle/'
+        if os.path.exists(PICKLE_PATH + 'df_train_csv.pkl'):
+            df_train_features = pd.read_pickle(PICKLE_PATH + 'df_train_csv.pkl')
+            df_train_targets = pd.read_pickle(PICKLE_PATH + 'df_targets_csv.pkl')
+            df_test_features = pd.read_pickle(PICKLE_PATH + 'df_test_csv.pkl')
             print('Dataframes were read from pkl')
         else:
+            print('reading Dataframes from csv ..')
+
             PATH_TO_DATA = '../input/'
 
             # Train dataset
@@ -234,9 +237,12 @@ class CSVDataPrepare:
             print(df_train_features.shape)
             # print(df_train_features.index.values)
 
-            df_train_features.to_pickle('df_train_csv.pkl')
-            df_train_targets.to_pickle('df_targets_csv.pkl')
-            df_test_features.to_pickle('df_test_csv.pkl')
+            if not os.path.exists(PICKLE_PATH):
+                os.makedirs(PICKLE_PATH)
+
+            df_train_features.to_pickle(PICKLE_PATH + 'df_train_csv.pkl')
+            df_train_targets.to_pickle(PICKLE_PATH + 'df_targets_csv.pkl')
+            df_test_features.to_pickle(PICKLE_PATH + 'df_test_csv.pkl')
 
         return df_train_features, df_train_targets, df_test_features
 
@@ -457,8 +463,10 @@ class JsonDataPrepare:
 
     # engineering inventory
     def add_inventory_dummies(self, train_df, test_df):
-
+        print('add_inventory_dummies start..')
         full_df = pd.concat([train_df, test_df], sort=False)
+        print(full_df.shape)
+
         train_size = train_df.shape[0]
 
         # In DOTA there are consumble items, which just restore a small amount of hp/mana or teleports you.
@@ -470,22 +478,32 @@ class JsonDataPrepare:
                               'ward_sentry']
 
         for team in 'r', 'd':
-            players = [f'{team}{i}' for i in range(1, 6)]
-            item_columns = [f'{player}_items' for player in players]
+            players = [f'{team}{i}' for i in range(1, 2)]
 
-            d = pd.get_dummies(full_df[item_columns[0]].apply(pd.Series).stack()).sum(level=0, axis=0)
-            dindexes = d.index.values
+            # playerwise items
+            #             for player in players:
+            #                 d = pd.DataFrame(index=full_df.index)
+            #                 dummies = pd.get_dummies(full_df[f'{player}_items'].apply(pd.Series).stack())
+            #                 dummies = dummies.sum(level=0, axis=0)
+            #                 d = d.add(dummies, fill_value=0)
+            # #                 print(d.head())
+            #                 d.drop(columns=consumable_columns, inplace=True)
+            #                 full_df = pd.concat([full_df, d.add_prefix(f'{player}_item_')], axis=1, sort=False)
 
-            for c in item_columns[1:]:
-                d = d.add(pd.get_dummies(full_df[c].apply(pd.Series).stack()).sum(level=0, axis=0), fill_value=0)
-                d = d.ix[dindexes]
+            # teamwise
+            item_columns = [f'{player}_items' for player in players]  # r1_items
+            d = pd.DataFrame(index=full_df.index)
+
+            for c in item_columns[0:]:
+                dummies = pd.get_dummies(full_df[c].apply(pd.Series).stack()).sum(level=0, axis=0)
+                d = d.add(dummies, fill_value=0)
+
+            d.drop(columns=consumable_columns, inplace=True)
 
             full_df = pd.concat([full_df, d.add_prefix(f'{team}_item_')], axis=1, sort=False)
-            full_df.drop(columns=item_columns, inplace=True)
+        #             print('Adding items for players of team {}, result DF: {} {}'.format(team, full_df.shape, full_df.shape[1]))
 
-            starts_with = f'{team}_item_'
-            consumable_columns_drop = [starts_with + column for column in consumable_columns]
-            full_df.drop(columns=consumable_columns_drop, inplace=True)
+        print('add_inventory_dummies added {} features'.format(full_df.shape[1] - train_df.shape[1]))
 
         train_df = full_df.iloc[:train_size, :]
         test_df = full_df.iloc[train_size:, :]
@@ -891,7 +909,7 @@ def lgb_model(X_train, X_test, y_train, tunning=False):
               'num_threads': -1,
               'verbosity': 1,
               'objective': 'binary',
-              'learning_rate': 0.01, # the changes between one auc and a better one gets really small thus a small
+              'learning_rate': 0.01,  # the changes between one auc and a better one gets really small thus a small
               # learning rate performs better
 
               'reg_alpha': 1.2,
@@ -935,8 +953,8 @@ def lgb_model(X_train, X_test, y_train, tunning=False):
 def main():
     data_loader = CSVDataPrepare()
     # data_loader = JsonDataPrepare()
-    # train, targets, test = data_loader.read_data_frame()
-    # X_train, y_train, X_test = data_loader.prepare_data(train, targets, test)
+    train, targets, test = data_loader.read_data_frame()
+    X_train, y_train, X_test = data_loader.prepare_data(train, targets, test)
 
     # tunning = True
     # lgb_model(X_train, X_test, y_train, tunning)

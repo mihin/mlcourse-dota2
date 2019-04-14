@@ -3,3 +3,4 @@
 *.jsonl
 *.lock
 */catboost_info/
+*/pickle/**
