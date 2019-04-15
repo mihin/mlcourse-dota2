@@ -10,7 +10,6 @@ import time
 import copy
 import collections
 import matplotlib.pyplot as plt
-import pickle as pkl
 
 # PyTorch stuff
 import torch
@@ -42,15 +41,33 @@ pd.options.mode.chained_assignment = None  # default='warn'
 SEED = 42
 
 
+class PickleHelper:
+
+    # TODO make generic data save/load/fetch method
+
+    PICKLE_PATH = './pickle/'
+
+    def save(self, df, filename):
+        if not os.path.exists(self.PICKLE_PATH):
+            os.makedirs(self.PICKLE_PATH)
+
+        df.to_pickle(self.PICKLE_PATH + filename + '.pkl')
+
+    def load(self, filename):
+        if os.path.exists(self.PICKLE_PATH + filename + '.pkl'):
+            return pd.read_pickle(self.PICKLE_PATH + filename + '.pkl')
+        return pd.DataFrame()
+
+
 class ColumnDataProcessor:
-    to_scale = True
+    to_scale = False
 
     def replaceNaNValues(self, A):
         A[np.isnan(A)] = 0
         A[np.isinf(A)] = 0
         return A
 
-    def add_team_features(self, df, c, r_columns, d_columns):
+    def add_team_features(self, df, feature, r_columns, d_columns):
         drop_features = []
         # df['r_total_' + c] = df[r_columns].sum(1)
         # df['d_total_' + c] = df[d_columns].sum(1)
@@ -58,17 +75,18 @@ class ColumnDataProcessor:
         # df['total_' + c + '_ratio'] = self.replaceNaNValues(df['total_' + c + '_ratio'])
         # drop_features = drop_features + ['r_total_' + c, 'd_total_' + c]
 
-        df['r_std_' + c] = df[r_columns].std(1)
-        df['d_std_' + c] = df[d_columns].std(1)
-        df['std_' + c + '_ratio'] = df['r_std_' + c] / df['d_std_' + c]
-        df['std_' + c + '_ratio'] = self.replaceNaNValues(df['std_' + c + '_ratio'])
-        drop_features = drop_features + ['r_std_' + c, 'd_std_' + c]
+        df['r_std_' + feature] = df[r_columns].std(1)
+        df['d_std_' + feature] = df[d_columns].std(1)
+        df['std_' + feature + '_ratio'] = df['r_std_' + feature] / df['d_std_' + feature]
+        df['std_' + feature + '_ratio'] = self.replaceNaNValues(df['std_' + feature + '_ratio'])
+        drop_features = drop_features + ['r_std_' + feature, 'd_std_' + feature]
 
-        df['r_mean_' + c] = df[r_columns].mean(1)
-        df['d_mean_' + c] = df[d_columns].mean(1)
-        df['mean_' + c + '_ratio'] = df['r_mean_' + c] / df['d_mean_' + c]
-        df['mean_' + c + '_ratio'] = self.replaceNaNValues(df['mean_' + c + '_ratio'])
-        # drop_features = drop_features + ['r_mean_' + c, 'd_mean_' + c]
+        df['r_mean_' + feature] = df[r_columns].mean(1)
+        df['d_mean_' + feature] = df[d_columns].mean(1)
+        df['mean_' + feature + '_diff'] = df['r_mean_' + feature] - df['d_mean_' + feature]
+        df['mean_' + feature + '_ratio'] = df['r_mean_' + feature] / df['d_mean_' + feature]
+        df['mean_' + feature + '_ratio'] = self.replaceNaNValues(df['mean_' + feature + '_ratio'])
+        drop_features = drop_features + ['r_mean_' + feature, 'd_mean_' + feature]
 
         df = df.drop(r_columns, axis=1)
         df = df.drop(d_columns, axis=1)
@@ -145,7 +163,8 @@ class ColumnDataProcessor:
             new_cols = new_cols.set_index('match_id_hash').add_prefix(f'{team}_hero_')  # e.g.r_hero_10_21
 
             # df = pd.merge(df, new_cols)
-            df = pd.merge(df, new_cols, on='match_id_hash')
+            # df = pd.merge(df, new_cols, on='match_id_hash')
+            df = pd.merge(df, new_cols, left_index=True, right_index=True)
             df.drop(columns=hero_columns, inplace=True)
 
         return df
@@ -162,16 +181,16 @@ class ColumnDataProcessor:
         features_list = features_list + ['distance']
 
         print('prepare_data.. Adding team features')
-        for c in features_list:
-            r_columns = [f'r{i}_{c}' for i in range(1, 6)]
-            d_columns = [f'd{i}_{c}' for i in range(1, 6)]
+        for feature in features_list:
+            r_columns = [f'r{i}_{feature}' for i in range(1, 6)]
+            d_columns = [f'd{i}_{feature}' for i in range(1, 6)]
 
-            train = self.add_team_features(train, c, r_columns, d_columns)
-            test = self.add_team_features(test, c, r_columns, d_columns)
+            train = self.add_team_features(train, feature, r_columns, d_columns)
+            test = self.add_team_features(test, feature, r_columns, d_columns)
 
             if self.to_scale:
                 features_to_scale = \
-                    ['std_' + c + '_ratio', 'mean_' + c + '_ratio', 'r_mean_' + c, 'd_mean_' + c]
+                    ['std_' + feature + '_ratio', 'mean_' + feature + '_ratio'] #, 'r_mean_' + feature, 'd_mean_' + feature]
                 #    ['total_' + c + '_ratio', 'std_' + c + '_ratio', 'mean_' + c + '_ratio']  # + r_heroes + d_heroes
                 scaler = MinMaxScaler()
                 train[features_to_scale] = scaler.fit_transform(train[features_to_scale])
@@ -210,15 +229,218 @@ class ColumnDataProcessor:
         return X, y, X_test
 
 
-class CSVDataPrepare:
+class JsonDataPrepare:
+    LABEL = 'json'
+
+    MATCH_FEATURES = [
+        ('game_time', lambda m: m['game_time']),
+        ('game_mode', lambda m: m['game_mode']),
+        ('lobby_type', lambda m: m['lobby_type']),
+        ('objectives_len', lambda m: len(m['objectives'])),
+        ('chat_len', lambda m: len(m['chat'])),
+    ]
+
+    PLAYER_FIELDS = [
+        'hero_id',
+
+        'kills',
+        'deaths',
+        'assists',
+        'denies',
+
+        'gold',
+        'lh',
+        'xp',
+        'health',
+        'max_health',
+        'max_mana',
+        'level',
+
+        'x',
+        'y',
+
+        'stuns',
+        'creeps_stacked',
+        'camps_stacked',
+        'rune_pickups',
+        'firstblood_claimed',
+        'teamfight_participation',
+        'towers_killed',
+        'roshans_killed',
+        'obs_placed',
+        'sen_placed',
+    ]
+
+    FEATURES_LIST = ['kills', 'deaths', 'assists', 'denies', 'gold', 'lh', 'xp', 'health', 'max_health', 'max_mana',
+                     'level', 'stuns', 'creeps_stacked', 'camps_stacked', 'rune_pickups',
+                     'firstblood_claimed', 'teamfight_participation', 'towers_killed', 'roshans_killed', 'obs_placed',
+                     'sen_placed', 'ability_level', 'max_hero_hit', 'purchase_count', 'count_ability_use',
+                     'damage_dealt', 'damage_received']
+
+    def extract_features_csv(self, match):
+        row = [
+            ('match_id_hash', match['match_id_hash']),
+        ]
+
+        for field, f in self.MATCH_FEATURES:
+            row.append((field, f(match)))
+
+        for slot, player in enumerate(match['players']):
+            if slot < 5:
+                player_name = 'r%d' % (slot + 1)
+            else:
+                player_name = 'd%d' % (slot - 4)
+
+            for field in self.PLAYER_FIELDS:
+                column_name = '%s_%s' % (player_name, field)
+                row.append((column_name, player[field]))
+            row.append((f'{player_name}_ability_level', len(player['ability_upgrades'])))
+            row.append((f'{player_name}_max_hero_hit', player['max_hero_hit']['value']))
+            row.append((f'{player_name}_purchase_count', len(player['purchase_log'])))
+            row.append((f'{player_name}_count_ability_use', sum(player['ability_uses'].values())))
+            row.append((f'{player_name}_damage_dealt', sum(player['damage'].values())))
+            row.append((f'{player_name}_damage_received', sum(player['damage_taken'].values())))
+            # adding hero inventory
+            row.append((f'{player_name}_items', list(map(lambda x: x['id'][5:], player['hero_inventory']))))
+            # row.append((f'{player_name}_items',
+            # list(map(lambda x: x['id'][5:]+f'_hero_{player["hero_id"]}', player['hero_inventory']))))
+
+        return collections.OrderedDict(row)
+
+    def extract_targets_csv(self, match, targets):
+        return collections.OrderedDict([('match_id_hash', match['match_id_hash'])] + [
+            (field, targets[field])
+            for field in ['game_time', 'radiant_win', 'duration', 'time_remaining', 'next_roshan_team']
+        ])
+
+    def read_matches(self, matches_file):
+        MATCHES_COUNT = {
+            'test_matches.jsonl': 10000,
+            'train_matches.jsonl': 39675,
+        }
+        _, filename = os.path.split(matches_file)
+        total_matches = MATCHES_COUNT.get(filename)
+
+        with open(matches_file) as fin:
+            for line in tqdm_notebook(fin, total=total_matches):
+                yield json.loads(line)
 
     def read_data_frame(self):
+        start = time.time()
+        pick = PickleHelper()
+        df_new_features = pick.load(f'df_train_{self.LABEL}')
+        if not df_new_features.empty:
+            df_new_targets = pick.load(f'df_targets_{self.LABEL}')
+            test_new_features = pick.load(f'df_test_{self.LABEL}')
+            print('Dataframes were read from pkl')
+        else:
+            PATH_TO_DATA = '../input/'
+            df_new_features = []
+            df_new_targets = []
 
-        PICKLE_PATH = './pickle/'
-        if os.path.exists(PICKLE_PATH + 'df_train_csv.pkl'):
-            df_train_features = pd.read_pickle(PICKLE_PATH + 'df_train_csv.pkl')
-            df_train_targets = pd.read_pickle(PICKLE_PATH + 'df_targets_csv.pkl')
-            df_test_features = pd.read_pickle(PICKLE_PATH + 'df_test_csv.pkl')
+            for match in self.read_matches(os.path.join(PATH_TO_DATA, 'train_matches.jsonl')):
+                # match_id_hash = match['match_id_hash']
+                features = self.extract_features_csv(match)
+                targets = self.extract_targets_csv(match, match['targets'])
+
+                df_new_features.append(features)
+                df_new_targets.append(targets)
+
+            df_new_features = pd.DataFrame.from_records(df_new_features).set_index('match_id_hash')
+            df_new_targets = pd.DataFrame.from_records(df_new_targets).set_index('match_id_hash')
+
+            test_new_features = []
+            for match in self.read_matches(os.path.join(PATH_TO_DATA, 'test_matches.jsonl')):
+                features = self.extract_features_csv(match)
+                test_new_features.append(features)
+
+            test_new_features = pd.DataFrame.from_records(test_new_features).set_index('match_id_hash')
+
+            pick.save(df_new_features, f'df_train_{self.LABEL}')
+            pick.save(df_new_targets, f'df_targets_{self.LABEL}')
+            pick.save(test_new_features, f'df_test_{self.LABEL}')
+
+        print("Original data frame (JSON): ")
+        print(df_new_features.shape)
+        print(df_new_targets.shape)
+
+        print(f'Data read in {time.time() - start}')
+
+        return df_new_features, df_new_targets, test_new_features
+
+    # engineering inventory
+    def add_inventory_dummies(self, train_df, test_df):
+        full_df = pd.concat([train_df, test_df], sort=False)
+        print(f'add_inventory_dummies start.. df: {full_df.shape}, train: {train_df.shape}, test_df: {test_df.shape}')
+
+        train_size = train_df.shape[0]
+
+        # In DOTA there are consumble items, which just restore a small amount of hp/mana or teleports you.
+        # These items do not affect the outcome of the game, so let's remove it!
+        consumable_columns = ['tango', 'tpscroll',
+                              'bottle', 'flask',
+                              'enchanted_mango', 'clarity',
+                              'faerie_fire', 'ward_observer',
+                              'ward_sentry']
+
+        for team in 'r', 'd':
+            players = [f'{team}{i}' for i in range(1, 6)]
+
+            # teamwise
+            item_columns = [f'{player}_items' for player in players]  # r1_items
+            d = pd.DataFrame(index=full_df.index)
+
+            for c in item_columns[0:]:
+                dummies = pd.get_dummies(full_df[c].apply(pd.Series).stack()).sum(level=0, axis=0)
+                d = d.add(dummies, fill_value=0)
+
+            # drop influenceless items
+            # d.drop(columns=consumable_columns, inplace=True)
+            # drop temporary inventory list columns
+            full_df.drop(columns=item_columns, inplace=True)
+
+            full_df = pd.concat([full_df, d.add_prefix(f'{team}_item_')], axis=1, sort=False)
+            # print('Adding items for players of team {}, result DF: {} {}'.format(team, full_df.shape, full_df.shape[1]))
+
+        print('add_inventory_dummies: added {} features'.format(full_df.shape[1] - train_df.shape[1]))
+
+        train_df = full_df.iloc[:train_size, :]
+        test_df = full_df.iloc[train_size:, :]
+
+        return train_df, test_df
+
+    def prepare_data(self, train_df, y_df, test_df):
+        start = time.time()
+        pick = PickleHelper()
+        train = pick.load(f'X_train_{self.LABEL}')
+        if not train.empty:
+            target = pick.load(f'y_targets_{self.LABEL}')
+            test = pick.load(f'X_test_{self.LABEL}')
+            print('Prepared data was read from pkl')
+        else:
+            train_df, test_df = self.add_inventory_dummies(train_df, test_df)
+            engineering = ColumnDataProcessor()
+            train, target, test = engineering.prepare_data(train_df, y_df, test_df, self.FEATURES_LIST)
+
+            pick.save(train, f'X_train_{self.LABEL}')
+            pick.save(target, f'y_targets_{self.LABEL}')
+            pick.save(test, f'X_test_{self.LABEL}')
+
+        print(f'Prepare data finished in {time.time() - start}, train: {train.shape}, target: {target.shape}')
+
+        return train, target, test
+
+
+class CSVDataPrepare:
+    LABEL = 'csv'
+
+    def read_data_frame(self):
+        start = time.time()
+        pick = PickleHelper()
+        df_train_features = pick.load(f'df_train_{self.LABEL}')
+        if not df_train_features.empty:
+            df_train_targets = pick.load(f'df_targets_{self.LABEL}')
+            df_test_features = pick.load(f'df_test_{self.LABEL}')
             print('Dataframes were read from pkl')
         else:
             print('reading Dataframes from csv ..')
@@ -230,19 +452,17 @@ class CSVDataPrepare:
             df_train_targets = pd.read_csv(os.path.join(PATH_TO_DATA, 'train_targets.csv'), index_col='match_id_hash')
             # Test dataset
             df_test_features = pd.read_csv(os.path.join(PATH_TO_DATA, 'test_features.csv'), index_col='match_id_hash')
-            # Check if there is missing data
-            print("Original data frame (CSV): ")
-            # print('df_train_features.isnull() {}'.format(df_train_features.isnull().values.any()))
-            # print('df_test_features.isnull() {}'.format(df_test_features.isnull().values.any()))
-            print(df_train_features.shape)
-            # print(df_train_features.index.values)
 
-            if not os.path.exists(PICKLE_PATH):
-                os.makedirs(PICKLE_PATH)
+            pick.save(df_train_features, f'df_train_{self.LABEL}')
+            pick.save(df_train_targets, f'df_targets_{self.LABEL}')
+            pick.save(df_test_features, f'df_test_{self.LABEL}')
 
-            df_train_features.to_pickle(PICKLE_PATH + 'df_train_csv.pkl')
-            df_train_targets.to_pickle(PICKLE_PATH + 'df_targets_csv.pkl')
-            df_test_features.to_pickle(PICKLE_PATH + 'df_test_csv.pkl')
+        # Check if there is missing data
+        print("Original data frame (CSV): ")
+        print(df_train_features.shape)
+        # print(df_train_features.head())
+
+        print(f'Data read in {time.time() - start}')
 
         return df_train_features, df_train_targets, df_test_features
 
@@ -333,179 +553,6 @@ class CSVDataPrepare:
                      'sen_placed']
 
     def prepare_data(self, train, target, test):
-        engineering = ColumnDataProcessor()
-        train, target, test = engineering.prepare_data(train, target, test, self.FEATURES_LIST)
-
-        return train, target, test
-
-
-class JsonDataPrepare:
-    MATCH_FEATURES = [
-        ('game_time', lambda m: m['game_time']),
-        ('game_mode', lambda m: m['game_mode']),
-        ('lobby_type', lambda m: m['lobby_type']),
-        ('objectives_len', lambda m: len(m['objectives'])),
-        ('chat_len', lambda m: len(m['chat'])),
-    ]
-
-    PLAYER_FIELDS = [
-        'hero_id',
-
-        'kills',
-        'deaths',
-        'assists',
-        'denies',
-
-        'gold',
-        'lh',
-        'xp',
-        'health',
-        'max_health',
-        'max_mana',
-        'level',
-
-        'x',
-        'y',
-
-        'stuns',
-        'creeps_stacked',
-        'camps_stacked',
-        'rune_pickups',
-        'firstblood_claimed',
-        'teamfight_participation',
-        'towers_killed',
-        'roshans_killed',
-        'obs_placed',
-        'sen_placed',
-    ]
-
-    FEATURES_LIST = ['kills', 'deaths', 'assists', 'denies', 'gold', 'lh', 'xp', 'health', 'max_health', 'max_mana',
-                     'level', 'stuns', 'creeps_stacked', 'camps_stacked', 'rune_pickups',
-                     'firstblood_claimed', 'teamfight_participation', 'towers_killed', 'roshans_killed', 'obs_placed',
-                     'sen_placed', 'ability_level', 'max_hero_hit', 'purchase_count', 'count_ability_use',
-                     'damage_dealt', 'damage_received']
-
-    def extract_features_csv(self, match):
-        row = [
-            ('match_id_hash', match['match_id_hash']),
-        ]
-
-        for field, f in self.MATCH_FEATURES:
-            row.append((field, f(match)))
-
-        for slot, player in enumerate(match['players']):
-            if slot < 5:
-                player_name = 'r%d' % (slot + 1)
-            else:
-                player_name = 'd%d' % (slot - 4)
-
-            for field in self.PLAYER_FIELDS:
-                column_name = '%s_%s' % (player_name, field)
-                row.append((column_name, player[field]))
-            row.append((f'{player_name}_ability_level', len(player['ability_upgrades'])))
-            row.append((f'{player_name}_max_hero_hit', player['max_hero_hit']['value']))
-            row.append((f'{player_name}_purchase_count', len(player['purchase_log'])))
-            row.append((f'{player_name}_count_ability_use', sum(player['ability_uses'].values())))
-            row.append((f'{player_name}_damage_dealt', sum(player['damage'].values())))
-            row.append((f'{player_name}_damage_received', sum(player['damage_taken'].values())))
-            # adding hero inventory
-            row.append((f'{player_name}_items', list(map(lambda x: x['id'][5:]+f'_hero_{player["hero_id"]}', player['hero_inventory']))))
-
-        return collections.OrderedDict(row)
-
-    def extract_targets_csv(self, match, targets):
-        return collections.OrderedDict([('match_id_hash', match['match_id_hash'])] + [
-            (field, targets[field])
-            for field in ['game_time', 'radiant_win', 'duration', 'time_remaining', 'next_roshan_team']
-        ])
-
-    def read_matches(self, matches_file):
-        MATCHES_COUNT = {
-            'test_matches.jsonl': 10000,
-            'train_matches.jsonl': 39675,
-        }
-        _, filename = os.path.split(matches_file)
-        total_matches = MATCHES_COUNT.get(filename)
-
-        with open(matches_file) as fin:
-            for line in tqdm_notebook(fin, total=total_matches):
-                yield json.loads(line)
-
-    def read_data_frame(self):
-        PATH_TO_DATA = '../input/'
-        df_new_features = []
-        df_new_targets = []
-
-        for match in self.read_matches(os.path.join(PATH_TO_DATA, 'train_matches.jsonl')):
-            # match_id_hash = match['match_id_hash']
-            features = self.extract_features_csv(match)
-            targets = self.extract_targets_csv(match, match['targets'])
-
-            df_new_features.append(features)
-            df_new_targets.append(targets)
-
-        df_new_features = pd.DataFrame.from_records(df_new_features).set_index('match_id_hash')
-        df_new_targets = pd.DataFrame.from_records(df_new_targets).set_index('match_id_hash')
-
-        test_new_features = []
-        for match in self.read_matches(os.path.join(PATH_TO_DATA, 'test_matches.jsonl')):
-            # match_id_hash = match['match_id_hash']
-            features = self.extract_features_csv(match)
-
-            test_new_features.append(features)
-
-        test_new_features = pd.DataFrame.from_records(test_new_features).set_index('match_id_hash')
-
-        print("Original data frame (JSON): ")
-        print(df_new_features.shape)
-
-        return df_new_features, df_new_targets, test_new_features
-
-    # engineering inventory
-    def add_inventory_dummies(self, train_df, test_df):
-        print(f'add_inventory_dummies start.. df: {full_df.shape}')
-        full_df = pd.concat([train_df, test_df], sort=False)
-
-        train_size = train_df.shape[0]
-
-        # In DOTA there are consumble items, which just restore a small amount of hp/mana or teleports you.
-        # These items do not affect the outcome of the game, so let's remove it!
-        consumable_columns = ['tango', 'tpscroll',
-                              'bottle', 'flask',
-                              'enchanted_mango', 'clarity',
-                              'faerie_fire', 'ward_observer',
-                              'ward_sentry']
-
-        for team in 'r', 'd':
-            players = [f'{team}{i}' for i in range(1, 6)]
-
-            # teamwise
-            item_columns = [f'{player}_items' for player in players]  # r1_items
-            d = pd.DataFrame(index=full_df.index)
-
-            for c in item_columns[0:]:
-                dummies = pd.get_dummies(full_df[c].apply(pd.Series).stack()).sum(level=0, axis=0)
-                d = d.add(dummies, fill_value=0)
-
-            # drop influenceless items
-            d.drop(columns=consumable_columns, inplace=True)
-            # drop temporary inventory list columns
-            full_df.drop(columns=item_columns, inplace=True)
-
-            full_df = pd.concat([full_df, d.add_prefix(f'{team}_item_')], axis=1, sort=False)
-        #             print('Adding items for players of team {}, result DF: {} {}'.format(team, full_df.shape, full_df.shape[1]))
-
-        print('add_inventory_dummies: added {} features'.format(full_df.shape[1] - train_df.shape[1]))
-
-        train_df = full_df.iloc[:train_size, :]
-        test_df = full_df.iloc[train_size:, :]
-
-        return train_df, test_df
-
-    def prepare_data(self, train, target, test):
-
-        train, test = self.add_inventory_dummies(train, test)
-
         engineering = ColumnDataProcessor()
         train, target, test = engineering.prepare_data(train, target, test, self.FEATURES_LIST)
 
@@ -692,7 +739,7 @@ def train_predict_MLP(dataloaders, X_train, X_valid_tensor, y_valid):
 
 
 # model_type = (lgb|xgb|sklearn|glm|cat)
-def train_model_generic(X, X_test, y, params, folds, model_type='lgb', plot_feature_importance=False, averaging='usual',
+def train_model_generic(X, X_test, y, params, folds, model_type='lgb', plot_feature_importance=True, averaging='usual',
                         model=None):
     oof = np.zeros(len(X))
     prediction = np.zeros(len(X_test))
@@ -790,9 +837,10 @@ def train_model_generic(X, X_test, y, params, folds, model_type='lgb', plot_feat
 
             best_features = feature_importance.loc[feature_importance.feature.isin(cols)]
 
-            plt.figure(figsize=(16, 12));
-            sns.barplot(x="importance", y="feature", data=best_features.sort_values(by="importance", ascending=False));
-            plt.title('LGB Features (avg over folds)');
+            plt.figure(figsize=(16, 12))
+            sns.barplot(x="importance", y="feature", data=best_features.sort_values(by="importance", ascending=False))
+            plt.title('LGB Features (avg over folds)')
+            plt.show()
 
             return oof, prediction, feature_importance
         return oof, prediction, scores
@@ -939,19 +987,22 @@ def lgb_model(X_train, X_test, y_train, tunning=False):
                                                           model_type='lgb',
                                                           plot_feature_importance=True)
 
+    np.save('predictions.pkl', prediction_lgb, allow_pickle=True)
+
     return oof_lgb, prediction_lgb, scores
 
 
 def main():
-    data_loader = CSVDataPrepare()
-    # data_loader = JsonDataPrepare()
-    train, targets, test = data_loader.read_data_frame()
-    X_train, y_train, X_test = data_loader.prepare_data(train, targets, test)
+    # data_loader = CSVDataPrepare()
+    data_loader = JsonDataPrepare()
+    train_df, targets_df, test_df = data_loader.read_data_frame()
 
-    # tunning = True
-    # lgb_model(X_train, X_test, y_train, tunning)
+    X_train, y_train, X_test = data_loader.prepare_data(train_df, targets_df, test_df)
 
-    # output_test_data(model, X_train, X_test_tensor)
+
+    tunning = False
+    oof_lgb, prediction_lgb, scores = lgb_model(X_train, X_test, y_train, tunning)
+    write_to_submission_file(prediction_lgb, test_df)
 
 
 if __name__ == '__main__':
