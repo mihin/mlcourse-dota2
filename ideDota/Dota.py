@@ -409,7 +409,7 @@ class JsonDataPrepare:
             row.append((f'{player_name}_damage_dealt', sum(player['damage'].values())))
             row.append((f'{player_name}_damage_received', sum(player['damage_taken'].values())))
             # adding hero inventory
-            row.append((f'{player_name}_items', list(map(lambda x: x['id'][5:], player['hero_inventory']))))
+            row.append((f'{player_name}_items', list(map(lambda x: x['id'][5:]+f'_hero_{player["hero_id"]}', player['hero_inventory']))))
 
         return collections.OrderedDict(row)
 
@@ -463,9 +463,8 @@ class JsonDataPrepare:
 
     # engineering inventory
     def add_inventory_dummies(self, train_df, test_df):
-        print('add_inventory_dummies start..')
+        print(f'add_inventory_dummies start.. df: {full_df.shape}')
         full_df = pd.concat([train_df, test_df], sort=False)
-        print(full_df.shape)
 
         train_size = train_df.shape[0]
 
@@ -478,17 +477,7 @@ class JsonDataPrepare:
                               'ward_sentry']
 
         for team in 'r', 'd':
-            players = [f'{team}{i}' for i in range(1, 2)]
-
-            # playerwise items
-            #             for player in players:
-            #                 d = pd.DataFrame(index=full_df.index)
-            #                 dummies = pd.get_dummies(full_df[f'{player}_items'].apply(pd.Series).stack())
-            #                 dummies = dummies.sum(level=0, axis=0)
-            #                 d = d.add(dummies, fill_value=0)
-            # #                 print(d.head())
-            #                 d.drop(columns=consumable_columns, inplace=True)
-            #                 full_df = pd.concat([full_df, d.add_prefix(f'{player}_item_')], axis=1, sort=False)
+            players = [f'{team}{i}' for i in range(1, 6)]
 
             # teamwise
             item_columns = [f'{player}_items' for player in players]  # r1_items
@@ -498,12 +487,15 @@ class JsonDataPrepare:
                 dummies = pd.get_dummies(full_df[c].apply(pd.Series).stack()).sum(level=0, axis=0)
                 d = d.add(dummies, fill_value=0)
 
+            # drop influenceless items
             d.drop(columns=consumable_columns, inplace=True)
+            # drop temporary inventory list columns
+            full_df.drop(columns=item_columns, inplace=True)
 
             full_df = pd.concat([full_df, d.add_prefix(f'{team}_item_')], axis=1, sort=False)
         #             print('Adding items for players of team {}, result DF: {} {}'.format(team, full_df.shape, full_df.shape[1]))
 
-        print('add_inventory_dummies added {} features'.format(full_df.shape[1] - train_df.shape[1]))
+        print('add_inventory_dummies: added {} features'.format(full_df.shape[1] - train_df.shape[1]))
 
         train_df = full_df.iloc[:train_size, :]
         test_df = full_df.iloc[train_size:, :]
