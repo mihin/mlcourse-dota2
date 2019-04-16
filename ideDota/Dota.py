@@ -66,9 +66,8 @@ class ColumnDataProcessor:
         A[np.isinf(A)] = 0
         return A
 
-    # TODO add: xp_per_sec, gold_per_sec, etc
     def add_team_features(self, df, feature, r_columns, d_columns):
-        # use separate df for new features, bundled add and drop
+        # TODO use separate df for new features, bundled add and drop
         drop_features = []
         # df['r_total_' + c] = df[r_columns].sum(1)
         # df['d_total_' + c] = df[d_columns].sum(1)
@@ -83,10 +82,16 @@ class ColumnDataProcessor:
         drop_features = drop_features + ['r_std_' + feature, 'd_std_' + feature]
 
         df['r_mean_' + feature] = df[r_columns].mean(1)
-        df['d_mean_' + feature] = df[d_columns].mean(1)
+        df['d_mean_' + feature] = df[d_columns].mean(1)/df['game_time']
+        # df['max_' + feature + '_diff'] = df[r_columns].max(1) - df[d_columns].min(1)
         df['mean_' + feature + '_diff'] = df['r_mean_' + feature] - df['d_mean_' + feature]
         df['mean_' + feature + '_ratio'] = df['r_mean_' + feature] / df['d_mean_' + feature]
         df['mean_' + feature + '_ratio'] = self.replaceNaNValues(df['mean_' + feature + '_ratio'])
+
+        df['r_mean_' + feature + '_per_min'] = df['r_mean_' + feature] / df['game_time']
+        df['d_mean_' + feature + '_per_min'] = df['d_mean_' + feature] / df['game_time']
+        df['mean_' + feature + '_diff_per_min'] = \
+            df['r_mean_' + feature + '_per_min'] - df['d_mean_' + feature + '_per_min']
         # drop_features = drop_features + ['r_mean_' + feature, 'd_mean_' + feature]
 
         df = df.drop(r_columns, axis=1)
@@ -94,16 +99,19 @@ class ColumnDataProcessor:
         df = df.drop(drop_features, axis=1)
         return df
 
-    def fantasy_points_df(self, df):
+    def fantasy_points_df(self, df, each_player=True):
         for team in 'r', 'd':
-            players = [f'{team}{i}' for i in range(1, 6)]  # r1, r2...
+            players = f'{team}_mean'
+            if (each_player):
+                players = [f'{team}{i}' for i in range(1, 6)]  # r1, r2...
+
             for player in players:
                 df[f'{player}_fantasy_points'] = self.fantasy_points(
                     df[f'{player}_kills'],
                     df[f'{player}_deaths'],
                     df[f'{player}_denies'],
                     df[f'{player}_deaths'],
-                    df[f'{player}_gold']/20,  # TODO gold_per_min
+                    df[f'{player}_gold'] / df['game_time'],
                     df[f'{player}_towers_killed'],
                     df[f'{player}_roshans_killed'],
                     df[f'{player}_stuns'],
@@ -114,7 +122,6 @@ class ColumnDataProcessor:
                     df[f'{player}_firstblood_claimed']
                 )
         return df
-
 
     def fantasy_points(self, kills, deaths, last_hits, denies, gold_per_min, towers_killed, roshans_killed, stuns,
                        teamfight_participation, observers_placed, camps_stacked, rune_pickups, firstblood_claimed):
@@ -212,6 +219,8 @@ class ColumnDataProcessor:
 
     def prepare_data(self, train, target, test, features_list):
         print('prepare_data.. Start')
+        train['game_time'] = train['game_time'].apply(lambda x: 1 if x < 60 else x / 60)
+        test['game_time'] = test['game_time'].apply(lambda x: 1 if x < 60 else x / 60)
 
         # r_heroes = [f'r{i}_hero_id' for i in range(1, 6)]
         # d_heroes = [f'd{i}_hero_id' for i in range(1, 6)]
@@ -225,7 +234,7 @@ class ColumnDataProcessor:
         test = self.fantasy_points_df(test)
         features_list = features_list + ['fantasy_points']
 
-        print('prepare_data.. Adding team features')
+        print(f'prepare_data.. Adding team features:\n{features_list}')
         for feature in features_list:
             r_columns = [f'r{i}_{feature}' for i in range(1, 6)]
             d_columns = [f'd{i}_{feature}' for i in range(1, 6)]
@@ -240,11 +249,15 @@ class ColumnDataProcessor:
                      'mean_' + feature + '_diff',
                      'r_mean_' + feature,
                      'd_mean_' + feature,
+                     'mean_' + feature + '_diff_per_min',
+                     'r_mean_' + feature + '_per_min',
+                     'd_mean_' + feature + '_per_min',
                      ]
                    # 'total_' + c + '_ratio', 'std_' + c + '_ratio']  # + r_heroes + d_heroes
                 scaler = MinMaxScaler()
                 train[features_to_scale] = scaler.fit_transform(train[features_to_scale])
                 test[features_to_scale] = scaler.transform(test[features_to_scale])
+
 
         print('prepare_data.. Replace heroes id')
 
@@ -390,7 +403,6 @@ class JsonDataPrepare:
                 yield json.loads(line)
 
     def read_data_frame(self):
-        start = time.time()
         pick = PickleHelper()
         df_new_features = pick.load(f'df_train_{self.LABEL}')
         if not df_new_features.empty:
@@ -398,6 +410,7 @@ class JsonDataPrepare:
             test_new_features = pick.load(f'df_test_{self.LABEL}')
             print('Dataframes were read from pkl')
         else:
+            start = time.time()
             PATH_TO_DATA = '../input/'
             df_new_features = []
             df_new_targets = []
@@ -423,12 +436,12 @@ class JsonDataPrepare:
             pick.save(df_new_features, f'df_train_{self.LABEL}')
             pick.save(df_new_targets, f'df_targets_{self.LABEL}')
             pick.save(test_new_features, f'df_test_{self.LABEL}')
+            print(f'Data read in {time.time() - start}')
 
         print("Original data frame (JSON): ")
         print(df_new_features.shape)
         print(df_new_targets.shape)
 
-        print(f'Data read in {time.time() - start}')
 
         return df_new_features, df_new_targets, test_new_features
 
@@ -490,7 +503,7 @@ class JsonDataPrepare:
         if not train.empty:
             target = pick.load(f'y_targets_{self.LABEL}')
             test = pick.load(f'X_test_{self.LABEL}')
-            print('Prepared data was read from pkl')
+            print(f'Prepared data was read from pkl in {time.time() - start}, train: {train.shape}, target: {target.shape}')
         else:
             train_df, test_df = self.add_inventory_dummies(train_df, test_df)
             engineering = ColumnDataProcessor()
@@ -499,8 +512,8 @@ class JsonDataPrepare:
             pick.save(train, f'X_train_{self.LABEL}')
             pick.save(target, f'y_targets_{self.LABEL}')
             pick.save(test, f'X_test_{self.LABEL}')
+            print(f'Prepare data finished in {time.time() - start}, train: {train.shape}, target: {target.shape}')
 
-        print(f'Prepare data finished in {time.time() - start}, train: {train.shape}, target: {target.shape}')
 
         return train, target, test
 
@@ -509,7 +522,6 @@ class CSVDataPrepare:
     LABEL = 'csv'
 
     def read_data_frame(self):
-        start = time.time()
         pick = PickleHelper()
         df_train_features = pick.load(f'df_train_{self.LABEL}')
         if not df_train_features.empty:
@@ -517,6 +529,7 @@ class CSVDataPrepare:
             df_test_features = pick.load(f'df_test_{self.LABEL}')
             print('Dataframes were read from pkl')
         else:
+            start = time.time()
             print('reading Dataframes from csv ..')
 
             PATH_TO_DATA = '../input/'
@@ -530,71 +543,14 @@ class CSVDataPrepare:
             pick.save(df_train_features, f'df_train_{self.LABEL}')
             pick.save(df_train_targets, f'df_targets_{self.LABEL}')
             pick.save(df_test_features, f'df_test_{self.LABEL}')
+            print(f'Data read in {time.time() - start}')
 
         # Check if there is missing data
         print("Original data frame (CSV): ")
         print(df_train_features.shape)
         # print(df_train_features.head())
 
-        print(f'Data read in {time.time() - start}')
-
         return df_train_features, df_train_targets, df_test_features
-
-    def prepareDataOld(self, train, target, test):
-        # Let's combine train and test datasets in one dataset.
-        # This allows for addding new features for both datasets at the same time.
-        df_full_features = pd.concat([train, test])
-
-        # Index to split the training and test data sets
-        idx_split = train.shape[0]
-
-        # That is,
-        # df_train_features == df_full_features[:idx_split]
-        # df_test_features == df_full_features[idx_split:]
-
-        df_full_features.drop(['game_time', 'game_mode', 'lobby_type', 'objectives_len', 'chat_len'],
-                              inplace=True, axis=1)
-
-        # Clearly the hero_id is a categorical feature, so let's one-hot encode it. Note that according to wiki there are
-        # 117 heroes, however in our dataset there are 116 heroes with ids 1, 2, ..., 114, 119, 120.
-        # You will get the same result for all teams and players, here I use r1.
-        np.sort(np.unique(df_full_features['r1_hero_id'].values.flatten()))
-
-        for t in ['r', 'd']:
-            for i in range(1, 6):
-                df_full_features = pd.get_dummies(df_full_features, columns=[f'{t}{i}_hero_id'])
-        #         df_full_features = pd.concat([df_full_features,
-        #           pd.get_dummies(df_full_features[f'{t}{i}_hero_id'], prefix=f'{t}{i}_hero_id')], axis=1)
-
-        # Finally let's scale the player-features that have relatively large values, such as gold, lh, xp etc.
-        player_features = set(f[3:] for f in train.columns[5:])
-        features_to_scale = []
-        for t in ['r', 'd']:
-            for i in range(1, 6):
-                for f in player_features - {'hero_id', 'firstblood_claimed', 'teamfight_participation'}:
-                    features_to_scale.append(f'{t}{i}_{f}')
-        df_full_features_scaled = df_full_features.copy()
-        df_full_features_scaled[features_to_scale] = MinMaxScaler().fit_transform(
-            df_full_features_scaled[features_to_scale])
-
-        df_full_features_scaled.head()
-        df_full_features_scaled.max().sort_values(ascending=False).head(12)
-
-        # Let's construct X and y arrays.
-        X_train = df_full_features_scaled[:idx_split]
-        X_test = df_full_features_scaled[idx_split:]
-        y_train = target['radiant_win'].map({True: 1, False: 0})
-
-        print(X_train.head())
-        print(X_train.describe())
-
-        # splitting whole dataset on train and test
-        # X_train = data.loc[:test_index].drop(["y"], axis=1)
-        # y_train = data.loc[:test_index]["y"]
-        # X_test = data.loc[test_index:].drop(["y"], axis=1)
-        # y_test = data.loc[test_index:]["y"]
-
-        return X_train, X_test, y_train
 
     def prepareValidationTensors(self, X_train, X_test, y_train, test_size=0.2):
         # Perform a train/validation split
@@ -1072,7 +1028,7 @@ def main():
     # data_loader = CSVDataPrepare()
     data_loader = JsonDataPrepare()
     train_df, targets_df, test_df = data_loader.read_data_frame()
-    print(f'Data read in {time.time() - start}')
+    print(f'Data loaded in {time.time() - start}')
 
     # print(train_df['d5_items'])
 
@@ -1088,4 +1044,7 @@ if __name__ == '__main__':
     main()
 
 # CV mean score: 0.8441, std: 0.0051.
-# train (39675, 682), THRESHOLD_SUM = 50
+#Dimensions: train (39675, 687)
+
+
+# Dimensions: train (39675, 774), test (10000, 774) '_per_min'
