@@ -42,7 +42,6 @@ SEED = 42
 
 
 class PickleHelper:
-
     # TODO make generic data save/load/fetch method
 
     PICKLE_PATH = './pickle/'
@@ -67,7 +66,9 @@ class ColumnDataProcessor:
         A[np.isinf(A)] = 0
         return A
 
+    # TODO add: xp_per_sec, gold_per_sec, etc
     def add_team_features(self, df, feature, r_columns, d_columns):
+        # use separate df for new features, bundled add and drop
         drop_features = []
         # df['r_total_' + c] = df[r_columns].sum(1)
         # df['d_total_' + c] = df[d_columns].sum(1)
@@ -79,19 +80,36 @@ class ColumnDataProcessor:
         df['d_std_' + feature] = df[d_columns].std(1)
         df['std_' + feature + '_ratio'] = df['r_std_' + feature] / df['d_std_' + feature]
         df['std_' + feature + '_ratio'] = self.replaceNaNValues(df['std_' + feature + '_ratio'])
-        drop_features = drop_features + ['r_std_' + feature, 'd_std_' + feature]
+        # drop_features = drop_features + ['r_std_' + feature, 'd_std_' + feature]
 
         df['r_mean_' + feature] = df[r_columns].mean(1)
         df['d_mean_' + feature] = df[d_columns].mean(1)
         df['mean_' + feature + '_diff'] = df['r_mean_' + feature] - df['d_mean_' + feature]
         df['mean_' + feature + '_ratio'] = df['r_mean_' + feature] / df['d_mean_' + feature]
         df['mean_' + feature + '_ratio'] = self.replaceNaNValues(df['mean_' + feature + '_ratio'])
-        drop_features = drop_features + ['r_mean_' + feature, 'd_mean_' + feature]
+        # drop_features = drop_features + ['r_mean_' + feature, 'd_mean_' + feature]
 
         df = df.drop(r_columns, axis=1)
         df = df.drop(d_columns, axis=1)
         df = df.drop(drop_features, axis=1)
         return df
+
+    # fantasy_points = ( \
+    #                 0.3*kills + \
+    #                 (3-0.3*deaths) + \
+    #                 0.003*(last_hits+denies) + \
+    #                 0.002*gold_per_min + \
+    #                 towers_killed + \
+    #                 roshans_killed + \
+    #                 3*teamfight_participation + \
+    #                 0.5*observers_placed + \
+    #                 0.5*camps_stacked + \
+    #                 0.25*rune_pickups + \
+    #                 4*firstblood_claimed + \
+    #                 0.05*stuns \
+    #                )
+    def fantasy_points(self, df):
+        return 1
 
     # As we see coordinate features (x and y) are quite important. However, I think we need to combine them into one
     # feature.Simplest idea is the distance from the left bottom corner. So, short distances mean near own base,
@@ -190,8 +208,13 @@ class ColumnDataProcessor:
 
             if self.to_scale:
                 features_to_scale = \
-                    ['std_' + feature + '_ratio', 'mean_' + feature + '_ratio'] #, 'r_mean_' + feature, 'd_mean_' + feature]
-                #    ['total_' + c + '_ratio', 'std_' + c + '_ratio', 'mean_' + c + '_ratio']  # + r_heroes + d_heroes
+                    ['std_' + feature + '_ratio',
+                     'mean_' + feature + '_ratio',
+                     'mean_' + feature + '_diff',
+                     'r_mean_' + feature,
+                     'd_mean_' + feature,
+                #    ['total_' + c + '_ratio', 'std_' + c + '_ratio']  # + r_heroes + d_heroes
+                     ]
                 scaler = MinMaxScaler()
                 train[features_to_scale] = scaler.fit_transform(train[features_to_scale])
                 test[features_to_scale] = scaler.transform(test[features_to_scale])
@@ -277,6 +300,14 @@ class JsonDataPrepare:
                      'sen_placed', 'ability_level', 'max_hero_hit', 'purchase_count', 'count_ability_use',
                      'damage_dealt', 'damage_received']
 
+    # In DOTA there are consumble items, which just restore a small amount of hp/mana or teleports you.
+    # These items do not affect the outcome of the game, so let's remove it!
+    consumable_columns = ['tango', 'tpscroll',
+                          'bottle', 'flask',
+                          'enchanted_mango', 'clarity',
+                          'faerie_fire', 'ward_observer',
+                          'ward_sentry']
+
     def extract_features_csv(self, match):
         row = [
             ('match_id_hash', match['match_id_hash']),
@@ -302,8 +333,14 @@ class JsonDataPrepare:
             row.append((f'{player_name}_damage_received', sum(player['damage_taken'].values())))
             # adding hero inventory
             row.append((f'{player_name}_items', list(map(lambda x: x['id'][5:], player['hero_inventory']))))
+
             # row.append((f'{player_name}_items',
-            # list(map(lambda x: x['id'][5:]+f'_hero_{player["hero_id"]}', player['hero_inventory']))))
+            #             list(map(lambda x: x['id'][5:] + f'_hero_{player["hero_id"]}', player['hero_inventory']))))
+
+            # row.append((f'{player_name}_items',
+            #             list(map(lambda x: x + f'_hero_{player["hero_id"]}',
+            #                      filter(lambda x: x not in self.consumable_columns,
+            #                             map(lambda x: x['id'][5:], player['hero_inventory']))))))
 
         return collections.OrderedDict(row)
 
@@ -368,22 +405,17 @@ class JsonDataPrepare:
 
         return df_new_features, df_new_targets, test_new_features
 
+    # TODO add pickle save
     # engineering inventory
     def add_inventory_dummies(self, train_df, test_df):
+        THRESHOLD_SUM = 200
         full_df = pd.concat([train_df, test_df], sort=False)
         print(f'add_inventory_dummies start.. df: {full_df.shape}, train: {train_df.shape}, test_df: {test_df.shape}')
 
         train_size = train_df.shape[0]
 
-        # In DOTA there are consumble items, which just restore a small amount of hp/mana or teleports you.
-        # These items do not affect the outcome of the game, so let's remove it!
-        consumable_columns = ['tango', 'tpscroll',
-                              'bottle', 'flask',
-                              'enchanted_mango', 'clarity',
-                              'faerie_fire', 'ward_observer',
-                              'ward_sentry']
-
         for team in 'r', 'd':
+            print(f'add_inventory_dummies: {team} team')
             players = [f'{team}{i}' for i in range(1, 6)]
 
             # teamwise
@@ -392,10 +424,12 @@ class JsonDataPrepare:
 
             for c in item_columns[0:]:
                 dummies = pd.get_dummies(full_df[c].apply(pd.Series).stack()).sum(level=0, axis=0)
+                for column in dummies.columns:
+                    if dummies[column].sum() < THRESHOLD_SUM:
+                        dummies.drop(column, axis=1, inplace=True)
                 d = d.add(dummies, fill_value=0)
 
-            # drop influenceless items
-            # d.drop(columns=consumable_columns, inplace=True)
+            # print(d.describe())
             # drop temporary inventory list columns
             full_df.drop(columns=item_columns, inplace=True)
 
@@ -993,17 +1027,28 @@ def lgb_model(X_train, X_test, y_train, tunning=False):
 
 
 def main():
+    tunning = False
+    start = time.time()
     # data_loader = CSVDataPrepare()
     data_loader = JsonDataPrepare()
     train_df, targets_df, test_df = data_loader.read_data_frame()
+    print(f'Data read in {time.time() - start}')
+
+    # print(train_df['d5_items'])
 
     X_train, y_train, X_test = data_loader.prepare_data(train_df, targets_df, test_df)
+    print(f'Data prepared in {time.time() - start}')
 
-
-    tunning = False
     oof_lgb, prediction_lgb, scores = lgb_model(X_train, X_test, y_train, tunning)
-    write_to_submission_file(prediction_lgb, test_df)
+    print(f'Model predictions in {time.time() - start}')
+    # write_to_submission_file(prediction_lgb, test_df)
 
 
 if __name__ == '__main__':
     main()
+
+# CV mean score: 0.8419
+# train: (39675, 828)
+
+# CV mean score: 0.8421
+#  train: (39675, 721), threshold=100
