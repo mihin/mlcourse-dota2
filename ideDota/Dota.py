@@ -36,7 +36,7 @@ from itertools import combinations
 
 import ujson as json
 
-TEST_RUN = True
+TEST_RUN = False
 
 pd.options.mode.chained_assignment = None  # default='warn'
 
@@ -85,10 +85,9 @@ class ColumnDataProcessor:
 
         df['r_mean_' + feature] = df[r_columns].mean(1)
         df['d_mean_' + feature] = df[d_columns].mean(1)
-        # df['max_' + feature + '_diff'] = df[r_columns].max(1) - df[d_columns].min(1)
+        df['max_' + feature + '_diff'] = df[r_columns].max(1) - df[d_columns].max(1)
         df['mean_' + feature + '_diff'] = df['r_mean_' + feature] - df['d_mean_' + feature]
-        df['mean_' + feature + '_ratio'] = df['r_mean_' + feature] / df['d_mean_' + feature]
-        df['mean_' + feature + '_ratio'] = self.replaceNaNValues(df['mean_' + feature + '_ratio'])
+        df['mean_' + feature + '_ratio'] = self.replaceNaNValues(df['r_mean_' + feature] / df['d_mean_' + feature])
 
         # df['r_mean_' + feature + '_per_min'] = df['r_mean_' + feature] / df['game_time']
         # df['d_mean_' + feature + '_per_min'] = df['d_mean_' + feature] / df['game_time']
@@ -123,6 +122,10 @@ class ColumnDataProcessor:
                     df[f'{player}_rune_pickups'],
                     df[f'{player}_firstblood_claimed']
                 )
+                df[f'{player}_gold_per_min'] = df[f'{player}_gold'] / df['game_time']
+                df[f'{player}_xp_per_min'] = df[f'{player}_xp'] / df['game_time']
+                df[f'{player}_purchase_count_per_min'] = df[f'{player}_purchase_count'] / df['game_time']
+
         return df
 
     def fantasy_points(self, kills, deaths, last_hits, denies, gold_per_min, towers_killed, roshans_killed, stuns,
@@ -229,16 +232,14 @@ class ColumnDataProcessor:
         train = full_df
 
         train['game_time'] = train['game_time'].apply(lambda x: 1 if x < 60 else x / 60)
-        # test['game_time'] = test['game_time'].apply(lambda x: 1 if x < 60 else x / 60)
 
         train = self.make_coordinate_features(train)
-        # test = self.make_coordinate_features(test)
         # As the distance is also a numeric feature convert it into the team features
         features_list = features_list + ['distance']
 
         train = self.fantasy_points_df(train)
-        # test = self.fantasy_points_df(test)
         features_list = features_list + ['fantasy_points']
+        features_list = features_list + ['gold_per_min', 'xp_per_min', 'purchase_count_per_min']
 
         print(f'prepare_data.. Adding team features:\n{features_list}')
         for feature in features_list:
@@ -246,20 +247,20 @@ class ColumnDataProcessor:
             d_columns = [f'd{i}_{feature}' for i in range(1, 6)]
 
             train = self.add_team_features(train, feature, r_columns, d_columns)
-            # test = self.add_team_features(test, feature, r_columns, d_columns)
 
             if self.to_scale:
                 features_to_scale = \
-                    ['std_' + feature + '_ratio',
-                     'mean_' + feature + '_ratio',
-                     'mean_' + feature + '_diff',
-                     'r_mean_' + feature,
-                     'd_mean_' + feature,
-                     # 'mean_' + feature + '_diff_per_min',
-                     # 'r_mean_' + feature + '_per_min',
-                     # 'd_mean_' + feature + '_per_min',
-                     ]
-                # 'total_' + c + '_ratio', 'std_' + c + '_ratio']  # + r_heroes + d_heroes
+                    [
+                        'r_mean_' + feature,
+                        'd_mean_' + feature,
+                        # 'r_mean_' + feature + '_per_min',
+                        # 'd_mean_' + feature + '_per_min',
+                        'mean_' + feature + '_diff',
+                        # 'mean_' + feature + '_diff_per_min',
+                        'mean_' + feature + '_ratio',
+                        'max_' + feature + '_diff',
+                        'std_' + feature + '_ratio',
+                    ]
                 scaler = MinMaxScaler()
                 train[features_to_scale] = scaler.fit_transform(train[features_to_scale])
                 # test[features_to_scale] = scaler.transform(test[features_to_scale])
@@ -271,7 +272,6 @@ class ColumnDataProcessor:
         feat_to_drop = ['game_time', 'game_mode', 'lobby_type', 'objectives_len', 'chat_len']  # + r_heroes + d_heroes
         print('prepare_data.. Drop extra columns: {}'.format(feat_to_drop))
         train = train.drop(feat_to_drop, axis=1)
-        # test = test.drop(feat_to_drop, axis=1)
 
         full_df = train
         train = full_df.iloc[:train_size, :]
@@ -1053,7 +1053,9 @@ def main():
     print(f'Data prepared in {time.time() - start}')
     # print(X_train.describe())
 
-    oof_lgb, prediction_lgb, scores = lgb_model(X_train, X_test, y_train, tunning)
+    # oof_lgb, prediction_lgb, scores = lgb_model(X_train, X_test, y_train, tunning)
+
+    # prediction_lgb = np.load('./outout/predictions_array.npy')
     # write_to_submission_file(prediction_lgb, test_df)
     print(f'Model predictions in {time.time() - start}')
 
@@ -1061,13 +1063,11 @@ def main():
 if __name__ == '__main__':
     main()
 
-# CV mean score: 0.8441, std: 0.0051.
-# Dimensions: train (39675, 687)
+# CV mean score: 0.8442, std: 0.0051.
+# + xp,gold,purchases per min
 
-
-# CV mean score: 0.8421, std: 0.0048.
-# Dimensions: train (39675, 774), test (10000, 774) '_per_min'
-
+# CV mean score: 0.8438, std: 0.0046.
+# mean -> mean_per_im
 
 # CV mean score: 0.8387, std: 0.0021.
 # TEST_RUN
