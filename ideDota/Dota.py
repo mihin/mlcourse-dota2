@@ -94,22 +94,45 @@ class ColumnDataProcessor:
         df = df.drop(drop_features, axis=1)
         return df
 
-    # fantasy_points = ( \
-    #                 0.3*kills + \
-    #                 (3-0.3*deaths) + \
-    #                 0.003*(last_hits+denies) + \
-    #                 0.002*gold_per_min + \
-    #                 towers_killed + \
-    #                 roshans_killed + \
-    #                 3*teamfight_participation + \
-    #                 0.5*observers_placed + \
-    #                 0.5*camps_stacked + \
-    #                 0.25*rune_pickups + \
-    #                 4*firstblood_claimed + \
-    #                 0.05*stuns \
-    #                )
-    def fantasy_points(self, df):
-        return 1
+    def fantasy_points_df(self, df):
+        for team in 'r', 'd':
+            players = [f'{team}{i}' for i in range(1, 6)]  # r1, r2...
+            for player in players:
+                df[f'{player}_fantasy_points'] = self.fantasy_points(
+                    df[f'{player}_kills'],
+                    df[f'{player}_deaths'],
+                    df[f'{player}_denies'],
+                    df[f'{player}_deaths'],
+                    df[f'{player}_gold']/20,  # TODO gold_per_min
+                    df[f'{player}_towers_killed'],
+                    df[f'{player}_roshans_killed'],
+                    df[f'{player}_stuns'],
+                    df[f'{player}_teamfight_participation'],
+                    df[f'{player}_obs_placed'],
+                    df[f'{player}_camps_stacked'],
+                    df[f'{player}_rune_pickups'],
+                    df[f'{player}_firstblood_claimed']
+                )
+        return df
+
+
+    def fantasy_points(self, kills, deaths, last_hits, denies, gold_per_min, towers_killed, roshans_killed, stuns,
+                       teamfight_participation, observers_placed, camps_stacked, rune_pickups, firstblood_claimed):
+        fantasy_points = (
+                    0.3 * kills +
+                    (3 - 0.3 * deaths) +
+                    0.003 * (last_hits + denies) +
+                    0.002 * gold_per_min +
+                    towers_killed +
+                    roshans_killed +
+                    3 * teamfight_participation +
+                    0.5 * observers_placed +
+                    0.5 * camps_stacked +
+                    0.25 * rune_pickups +
+                    4 * firstblood_claimed +
+                    0.05 * stuns
+            )
+        return fantasy_points
 
     # As we see coordinate features (x and y) are quite important. However, I think we need to combine them into one
     # feature.Simplest idea is the distance from the left bottom corner. So, short distances mean near own base,
@@ -197,6 +220,10 @@ class ColumnDataProcessor:
         test = self.make_coordinate_features(test)
         # As the distance is also a numeric feature convert it into the team features
         features_list = features_list + ['distance']
+
+        train = self.fantasy_points_df(train)
+        test = self.fantasy_points_df(test)
+        features_list = features_list + ['fantasy_points']
 
         print('prepare_data.. Adding team features')
         for feature in features_list:
@@ -408,38 +435,51 @@ class JsonDataPrepare:
     # TODO add pickle save
     # engineering inventory
     def add_inventory_dummies(self, train_df, test_df):
-        THRESHOLD_SUM = 50
-        full_df = pd.concat([train_df, test_df], sort=False)
-        print(f'add_inventory_dummies start.. df: {full_df.shape}, train: {train_df.shape}, test_df: {test_df.shape}')
+        pick = PickleHelper()
+        train = pick.load(f'df_train_inventory_{self.LABEL}')
+        if not train.empty:
+            train_df = train
+            test_df = pick.load(f'df_test_inventory_{self.LABEL}')
+            print('Inventory dataframes were read from pkl')
+        else:
+            start = time.time()
+            THRESHOLD_SUM = 50
+            full_df = pd.concat([train_df, test_df], sort=False)
+            print(f'add_inventory_dummies start.. df: {full_df.shape}, train: {train_df.shape}, test_df: {test_df.shape}')
 
-        train_size = train_df.shape[0]
+            train_size = train_df.shape[0]
 
-        for team in 'r', 'd':
-            print(f'add_inventory_dummies: {team} team')
-            players = [f'{team}{i}' for i in range(1, 6)]
+            for team in 'r', 'd':
+                print(f'add_inventory_dummies: {team} team')
+                players = [f'{team}{i}' for i in range(1, 6)]
 
-            # teamwise
-            item_columns = [f'{player}_items' for player in players]  # r1_items
-            d = pd.DataFrame(index=full_df.index)
+                # teamwise
+                item_columns = [f'{player}_items' for player in players]  # r1_items
+                d = pd.DataFrame(index=full_df.index)
 
-            for c in item_columns[0:]:
-                dummies = pd.get_dummies(full_df[c].apply(pd.Series).stack()).sum(level=0, axis=0)
-                for column in dummies.columns:
-                    if dummies[column].sum() < THRESHOLD_SUM:
-                        dummies.drop(column, axis=1, inplace=True)
-                d = d.add(dummies, fill_value=0)
+                for c in item_columns[0:]:
+                    dummies = pd.get_dummies(full_df[c].apply(pd.Series).stack()).sum(level=0, axis=0)
+                    for column in dummies.columns:
+                        if dummies[column].sum() < THRESHOLD_SUM:
+                            dummies.drop(column, axis=1, inplace=True)
+                    d = d.add(dummies, fill_value=0)
 
-            # print(d.describe())
-            # drop temporary inventory list columns
-            full_df.drop(columns=item_columns, inplace=True)
+                # print(d.describe())
+                # drop temporary inventory list columns
+                full_df.drop(columns=item_columns, inplace=True)
 
-            full_df = pd.concat([full_df, d.add_prefix(f'{team}_item_')], axis=1, sort=False)
-            # print('Adding items for players of team {}, result DF: {} {}'.format(team, full_df.shape, full_df.shape[1]))
+                full_df = pd.concat([full_df, d.add_prefix(f'{team}_item_')], axis=1, sort=False)
+                # print('Adding items for players of team {}, result DF: {} {}'.format(team, full_df.shape, full_df.shape[1]))
 
-        print('add_inventory_dummies: added {} features'.format(full_df.shape[1] - train_df.shape[1]))
+            print('add_inventory_dummies: added {} features'.format(full_df.shape[1] - train_df.shape[1]))
 
-        train_df = full_df.iloc[:train_size, :]
-        test_df = full_df.iloc[train_size:, :]
+            train_df = full_df.iloc[:train_size, :]
+            test_df = full_df.iloc[train_size:, :]
+
+            pick.save(train_df, f'df_train_inventory_{self.LABEL}')
+            pick.save(test_df, f'df_test_inventory_{self.LABEL}')
+
+            print(f'Inventory data processed in {time.time() - start}')
 
         return train_df, test_df
 
@@ -979,16 +1019,16 @@ def lgb_model(X_train, X_test, y_train, tunning=False):
               'max_depth': -1,
               'metric': 'auc',
               'min_data_in_leaf': 50,
-              'num_leaves': 32,  # 10
+              'num_leaves': 10,  # 10, 32, 64
               'num_threads': -1,
               'verbosity': 1,
               'objective': 'binary',
-              'learning_rate': 0.01,  # the changes between one auc and a better one gets really small thus a small
+              'learning_rate': 0.005,  # the changes between one auc and a better one gets really small thus a small
               # learning rate performs better
 
-              'reg_alpha': 1.2,
-              'reg_lambda': 1,
-              'colsample_bytree': 0.66,
+              # 'reg_alpha': 1.2,
+              # 'reg_lambda': 1,
+              # 'colsample_bytree': 0.66,
               'bagging_freq': 5,  # handling overfitting
               'bagging_fraction': 0.5,  # handling overfitting - adding some noise
               'boost_from_average': 'false',
@@ -1041,11 +1081,11 @@ def main():
 
     oof_lgb, prediction_lgb, scores = lgb_model(X_train, X_test, y_train, tunning)
     print(f'Model predictions in {time.time() - start}')
-    # write_to_submission_file(prediction_lgb, test_df)
+    write_to_submission_file(prediction_lgb, test_df)
 
 
 if __name__ == '__main__':
     main()
 
-# CV mean score: 0.8424, std: 0.0055.
+# CV mean score: 0.8441, std: 0.0051.
 # train (39675, 682), THRESHOLD_SUM = 50
