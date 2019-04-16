@@ -80,7 +80,7 @@ class ColumnDataProcessor:
         df['d_std_' + feature] = df[d_columns].std(1)
         df['std_' + feature + '_ratio'] = df['r_std_' + feature] / df['d_std_' + feature]
         df['std_' + feature + '_ratio'] = self.replaceNaNValues(df['std_' + feature + '_ratio'])
-        # drop_features = drop_features + ['r_std_' + feature, 'd_std_' + feature]
+        drop_features = drop_features + ['r_std_' + feature, 'd_std_' + feature]
 
         df['r_mean_' + feature] = df[r_columns].mean(1)
         df['d_mean_' + feature] = df[d_columns].mean(1)
@@ -190,8 +190,8 @@ class ColumnDataProcessor:
     def prepare_data(self, train, target, test, features_list):
         print('prepare_data.. Start')
 
-        r_heroes = [f'r{i}_hero_id' for i in range(1, 6)]
-        d_heroes = [f'd{i}_hero_id' for i in range(1, 6)]
+        # r_heroes = [f'r{i}_hero_id' for i in range(1, 6)]
+        # d_heroes = [f'd{i}_hero_id' for i in range(1, 6)]
 
         train = self.make_coordinate_features(train)
         test = self.make_coordinate_features(test)
@@ -213,8 +213,8 @@ class ColumnDataProcessor:
                      'mean_' + feature + '_diff',
                      'r_mean_' + feature,
                      'd_mean_' + feature,
-                #    ['total_' + c + '_ratio', 'std_' + c + '_ratio']  # + r_heroes + d_heroes
                      ]
+                   # 'total_' + c + '_ratio', 'std_' + c + '_ratio']  # + r_heroes + d_heroes
                 scaler = MinMaxScaler()
                 train[features_to_scale] = scaler.fit_transform(train[features_to_scale])
                 test[features_to_scale] = scaler.transform(test[features_to_scale])
@@ -408,7 +408,7 @@ class JsonDataPrepare:
     # TODO add pickle save
     # engineering inventory
     def add_inventory_dummies(self, train_df, test_df):
-        THRESHOLD_SUM = 200
+        THRESHOLD_SUM = 50
         full_df = pd.concat([train_df, test_df], sort=False)
         print(f'add_inventory_dummies start.. df: {full_df.shape}, train: {train_df.shape}, test_df: {test_df.shape}')
 
@@ -1047,8 +1047,5 @@ def main():
 if __name__ == '__main__':
     main()
 
-# CV mean score: 0.8419
-# train: (39675, 828)
-
-# CV mean score: 0.8421
-#  train: (39675, 721), threshold=100
+# CV mean score: 0.8424, std: 0.0055.
+# train (39675, 682), THRESHOLD_SUM = 50
