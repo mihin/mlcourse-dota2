@@ -36,6 +36,8 @@ from itertools import combinations
 
 import ujson as json
 
+TEST_RUN = True
+
 pd.options.mode.chained_assignment = None  # default='warn'
 
 SEED = 42
@@ -82,16 +84,16 @@ class ColumnDataProcessor:
         drop_features = drop_features + ['r_std_' + feature, 'd_std_' + feature]
 
         df['r_mean_' + feature] = df[r_columns].mean(1)
-        df['d_mean_' + feature] = df[d_columns].mean(1)/df['game_time']
+        df['d_mean_' + feature] = df[d_columns].mean(1)
         # df['max_' + feature + '_diff'] = df[r_columns].max(1) - df[d_columns].min(1)
         df['mean_' + feature + '_diff'] = df['r_mean_' + feature] - df['d_mean_' + feature]
         df['mean_' + feature + '_ratio'] = df['r_mean_' + feature] / df['d_mean_' + feature]
         df['mean_' + feature + '_ratio'] = self.replaceNaNValues(df['mean_' + feature + '_ratio'])
 
-        df['r_mean_' + feature + '_per_min'] = df['r_mean_' + feature] / df['game_time']
-        df['d_mean_' + feature + '_per_min'] = df['d_mean_' + feature] / df['game_time']
-        df['mean_' + feature + '_diff_per_min'] = \
-            df['r_mean_' + feature + '_per_min'] - df['d_mean_' + feature + '_per_min']
+        # df['r_mean_' + feature + '_per_min'] = df['r_mean_' + feature] / df['game_time']
+        # df['d_mean_' + feature + '_per_min'] = df['d_mean_' + feature] / df['game_time']
+        # df['mean_' + feature + '_diff_per_min'] = \
+        #     df['r_mean_' + feature + '_per_min'] - df['d_mean_' + feature + '_per_min']
         # drop_features = drop_features + ['r_mean_' + feature, 'd_mean_' + feature]
 
         df = df.drop(r_columns, axis=1)
@@ -126,19 +128,19 @@ class ColumnDataProcessor:
     def fantasy_points(self, kills, deaths, last_hits, denies, gold_per_min, towers_killed, roshans_killed, stuns,
                        teamfight_participation, observers_placed, camps_stacked, rune_pickups, firstblood_claimed):
         fantasy_points = (
-                    0.3 * kills +
-                    (3 - 0.3 * deaths) +
-                    0.003 * (last_hits + denies) +
-                    0.002 * gold_per_min +
-                    towers_killed +
-                    roshans_killed +
-                    3 * teamfight_participation +
-                    0.5 * observers_placed +
-                    0.5 * camps_stacked +
-                    0.25 * rune_pickups +
-                    4 * firstblood_claimed +
-                    0.05 * stuns
-            )
+                0.3 * kills +
+                (3 - 0.3 * deaths) +
+                0.003 * (last_hits + denies) +
+                0.002 * gold_per_min +
+                towers_killed +
+                roshans_killed +
+                3 * teamfight_participation +
+                0.5 * observers_placed +
+                0.5 * camps_stacked +
+                0.25 * rune_pickups +
+                4 * firstblood_claimed +
+                0.05 * stuns
+        )
         return fantasy_points
 
     # As we see coordinate features (x and y) are quite important. However, I think we need to combine them into one
@@ -171,21 +173,23 @@ class ColumnDataProcessor:
         ids = {"_".join(item) for item in ids}  # convert from lists to string e.g. (1,2) -> '1_2'
         return ids
 
-    def replace_hero_ids(self, train, test):
+    def replace_hero_ids(self, train, test=pd.DataFrame()):
         vectorizer = TfidfVectorizer(self.hero_id_subset_analyzer, ngram_range=(1, 1), max_features=1000,
                                      tokenizer=lambda s: s.split())
 
-        full_df = pd.concat([train, test], sort=False)
-        train_size = train.shape[0]
+        full_df = train
+        if not test.empty:
+            full_df = pd.concat([train, test], sort=False)
+            train_size = train.shape[0]
+
         full_df = self.replace_hero_ids_df(full_df, vectorizer)
 
-        # train = self.replace_hero_ids_df(train, vectorizer)
-        # test = self.replace_hero_ids_df(test, vectorizer, train=False)
-
-        train = full_df.iloc[:train_size, :]
-        test = full_df.iloc[train_size:, :]
-
-        return train, test
+        if not test.empty:
+            train = full_df.iloc[:train_size, :]
+            test = full_df.iloc[train_size:, :]
+            return train, test
+        else:
+            return full_df
 
     def replace_hero_ids_df(self, df, vectorizer, train=True):
 
@@ -219,19 +223,21 @@ class ColumnDataProcessor:
 
     def prepare_data(self, train, target, test, features_list):
         print('prepare_data.. Start')
-        train['game_time'] = train['game_time'].apply(lambda x: 1 if x < 60 else x / 60)
-        test['game_time'] = test['game_time'].apply(lambda x: 1 if x < 60 else x / 60)
 
-        # r_heroes = [f'r{i}_hero_id' for i in range(1, 6)]
-        # d_heroes = [f'd{i}_hero_id' for i in range(1, 6)]
+        full_df = pd.concat([train, test], sort=False)
+        train_size = train.shape[0]
+        train = full_df
+
+        train['game_time'] = train['game_time'].apply(lambda x: 1 if x < 60 else x / 60)
+        # test['game_time'] = test['game_time'].apply(lambda x: 1 if x < 60 else x / 60)
 
         train = self.make_coordinate_features(train)
-        test = self.make_coordinate_features(test)
+        # test = self.make_coordinate_features(test)
         # As the distance is also a numeric feature convert it into the team features
         features_list = features_list + ['distance']
 
         train = self.fantasy_points_df(train)
-        test = self.fantasy_points_df(test)
+        # test = self.fantasy_points_df(test)
         features_list = features_list + ['fantasy_points']
 
         print(f'prepare_data.. Adding team features:\n{features_list}')
@@ -240,7 +246,7 @@ class ColumnDataProcessor:
             d_columns = [f'd{i}_{feature}' for i in range(1, 6)]
 
             train = self.add_team_features(train, feature, r_columns, d_columns)
-            test = self.add_team_features(test, feature, r_columns, d_columns)
+            # test = self.add_team_features(test, feature, r_columns, d_columns)
 
             if self.to_scale:
                 features_to_scale = \
@@ -249,26 +255,27 @@ class ColumnDataProcessor:
                      'mean_' + feature + '_diff',
                      'r_mean_' + feature,
                      'd_mean_' + feature,
-                     'mean_' + feature + '_diff_per_min',
-                     'r_mean_' + feature + '_per_min',
-                     'd_mean_' + feature + '_per_min',
+                     # 'mean_' + feature + '_diff_per_min',
+                     # 'r_mean_' + feature + '_per_min',
+                     # 'd_mean_' + feature + '_per_min',
                      ]
-                   # 'total_' + c + '_ratio', 'std_' + c + '_ratio']  # + r_heroes + d_heroes
+                # 'total_' + c + '_ratio', 'std_' + c + '_ratio']  # + r_heroes + d_heroes
                 scaler = MinMaxScaler()
                 train[features_to_scale] = scaler.fit_transform(train[features_to_scale])
-                test[features_to_scale] = scaler.transform(test[features_to_scale])
-
+                # test[features_to_scale] = scaler.transform(test[features_to_scale])
 
         print('prepare_data.. Replace heroes id')
 
-        train, test = self.replace_hero_ids(train, test)
-        # train = self.hot_feat_hero_id(train)
-        # test = self.hot_feat_hero_id(test)
+        train = self.replace_hero_ids(train)
 
         feat_to_drop = ['game_time', 'game_mode', 'lobby_type', 'objectives_len', 'chat_len']  # + r_heroes + d_heroes
         print('prepare_data.. Drop extra columns: {}'.format(feat_to_drop))
         train = train.drop(feat_to_drop, axis=1)
-        test = test.drop(feat_to_drop, axis=1)
+        # test = test.drop(feat_to_drop, axis=1)
+
+        full_df = train
+        train = full_df.iloc[:train_size, :]
+        test = full_df.iloc[train_size:, :]
 
         return self.prepare_data_simple(train, target, test)
 
@@ -442,7 +449,6 @@ class JsonDataPrepare:
         print(df_new_features.shape)
         print(df_new_targets.shape)
 
-
         return df_new_features, df_new_targets, test_new_features
 
     # TODO add pickle save
@@ -458,9 +464,9 @@ class JsonDataPrepare:
             start = time.time()
             THRESHOLD_SUM = 50
             full_df = pd.concat([train_df, test_df], sort=False)
-            print(f'add_inventory_dummies start.. df: {full_df.shape}, train: {train_df.shape}, test_df: {test_df.shape}')
-
             train_size = train_df.shape[0]
+            print(
+                f'add_inventory_dummies start.. df: {full_df.shape}, train: {train_df.shape}, test_df: {test_df.shape}')
 
             for team in 'r', 'd':
                 print(f'add_inventory_dummies: {team} team')
@@ -503,17 +509,22 @@ class JsonDataPrepare:
         if not train.empty:
             target = pick.load(f'y_targets_{self.LABEL}')
             test = pick.load(f'X_test_{self.LABEL}')
-            print(f'Prepared data was read from pkl in {time.time() - start}, train: {train.shape}, target: {target.shape}')
+            print(f'Prepared data was read from pkl in {time.time() - start}, train: {train.shape}, '
+                  f'target: {target.shape}, test: {test.shape}')
         else:
             train_df, test_df = self.add_inventory_dummies(train_df, test_df)
+
+            # print(f'Prepare data start in {time.time() - start}, train: {train_df.shape}, target: {y_df.shape}, '
+            #       f'test: {test_df.shape}')
+
             engineering = ColumnDataProcessor()
             train, target, test = engineering.prepare_data(train_df, y_df, test_df, self.FEATURES_LIST)
 
             pick.save(train, f'X_train_{self.LABEL}')
             pick.save(target, f'y_targets_{self.LABEL}')
             pick.save(test, f'X_test_{self.LABEL}')
-            print(f'Prepare data finished in {time.time() - start}, train: {train.shape}, target: {target.shape}')
-
+            print(f'Prepare data finished in {time.time() - start}, train: {train.shape}, target: {target.shape}, '
+                  f'test: {test.shape}')
 
         return train, target, test
 
@@ -638,7 +649,9 @@ def write_to_submission_file(predicted_labels, df_test_features):
     df_submission = pd.DataFrame({'radiant_win_prob': predicted_labels},
                                  index=df_test_features.index)
 
-    submission_filename = 'submission_{}.csv'.format(
+    if not os.path.exists('./outout'):
+        os.makedirs('./outout')
+    submission_filename = './outout/submission_{}.csv'.format(
         datetime.datetime.now(tz=pytz.timezone('Europe/Athens')).strftime('%Y-%m-%d_%H-%M-%S'))
 
     df_submission.to_csv(submission_filename)
@@ -769,8 +782,8 @@ def train_predict_MLP(dataloaders, X_train, X_valid_tensor, y_valid):
 
 
 # model_type = (lgb|xgb|sklearn|glm|cat)
-def train_model_generic(X, X_test, y, params, folds, model_type='lgb', plot_feature_importance=True, averaging='usual',
-                        model=None):
+def train_model_generic(X, X_test, y, params, folds, model_type='lgb', n_fold=5, plot_feature_importance=True,
+                        averaging='usual', model=None):
     oof = np.zeros(len(X))
     prediction = np.zeros(len(X_test))
     scores = []
@@ -789,7 +802,7 @@ def train_model_generic(X, X_test, y, params, folds, model_type='lgb', plot_feat
                               num_boost_round=20000,
                               valid_sets=[train_data, valid_data],
                               verbose_eval=1000,
-                              early_stopping_rounds=200)
+                              early_stopping_rounds=100 if TEST_RUN else 200)
 
             y_pred_valid = model.predict(X_valid)
             y_pred = model.predict(X_test, num_iteration=model.best_iteration)
@@ -853,8 +866,6 @@ def train_model_generic(X, X_test, y, params, folds, model_type='lgb', plot_feat
             # display_html(eli5.show_weights(estimator=model,
             #                                feature_names=train_df.columns.values, top=50))
 
-    # TODO pass as a param
-    n_fold = 5
     prediction /= n_fold
 
     print('CV mean score: {0:.4f}, std: {1:.4f}.'.format(np.mean(scores), np.std(scores)))
@@ -967,21 +978,24 @@ def lgb_model_tunning(X, y, params):
 
 
 def lgb_model(X_train, X_test, y_train, tunning=False):
-    n_fold = 5
+    n_fold = 3 if TEST_RUN else 5
     folds = StratifiedKFold(n_splits=n_fold, shuffle=True, random_state=SEED)
 
     params = {'boost': 'gbdt',
-              'feature_fraction': 0.05,  # handling overfitting
+              'feature_fraction': 0.1,  # handling overfitting
               'max_depth': -1,
               'metric': 'auc',
-              'min_data_in_leaf': 50,
-              'num_leaves': 10,  # 10, 32, 64
+              'min_data_in_leaf': 20,
+              'num_leaves': 10 if TEST_RUN else 15,  # 10, 32, 64
               'num_threads': -1,
               'verbosity': 1,
               'objective': 'binary',
-              'learning_rate': 0.005,  # the changes between one auc and a better one gets really small thus a small
+              # the changes between one auc and a better one gets really small thus a small
               # learning rate performs better
+              'learning_rate': 0.1 if TEST_RUN else 0.005,
+              # 'save_binary': TEST_RUN,
 
+              # 'device':'gpu',
               # 'reg_alpha': 1.2,
               # 'reg_lambda': 1,
               # 'colsample_bytree': 0.66,
@@ -1015,9 +1029,12 @@ def lgb_model(X_train, X_test, y_train, tunning=False):
                                                           params=params,
                                                           folds=folds,
                                                           model_type='lgb',
+                                                          n_fold=n_fold,
                                                           plot_feature_importance=True)
 
-    np.save('predictions.pkl', prediction_lgb, allow_pickle=True)
+    if not os.path.exists('./outout'):
+        os.makedirs('./outout')
+    np.save('./outout/predictions_array', prediction_lgb, allow_pickle=True)
 
     return oof_lgb, prediction_lgb, scores
 
@@ -1034,17 +1051,23 @@ def main():
 
     X_train, y_train, X_test = data_loader.prepare_data(train_df, targets_df, test_df)
     print(f'Data prepared in {time.time() - start}')
+    # print(X_train.describe())
 
     oof_lgb, prediction_lgb, scores = lgb_model(X_train, X_test, y_train, tunning)
+    # write_to_submission_file(prediction_lgb, test_df)
     print(f'Model predictions in {time.time() - start}')
-    write_to_submission_file(prediction_lgb, test_df)
 
 
 if __name__ == '__main__':
     main()
 
 # CV mean score: 0.8441, std: 0.0051.
-#Dimensions: train (39675, 687)
+# Dimensions: train (39675, 687)
 
 
+# CV mean score: 0.8421, std: 0.0048.
 # Dimensions: train (39675, 774), test (10000, 774) '_per_min'
+
+
+# CV mean score: 0.8387, std: 0.0021.
+# TEST_RUN
